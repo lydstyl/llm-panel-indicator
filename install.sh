@@ -71,7 +71,7 @@ else
     # com.system76.CosmicPanel/v1/entries (ex. « Dock » sur le desktop .224, « Panel » sur le laptop).
     # Patcher un panneau non listé ne produit AUCUN effet (vécu : applet invisible, aucun log).
     python3 - "$HOME_DIR" "$APPLET_ID" <<'PY'
-import json, os, re, shutil, sys, time
+import os, re, shutil, sys, time
 
 home, applet = sys.argv[1], sys.argv[2]
 cosmic = os.path.join(home, ".config", "cosmic")
@@ -79,11 +79,9 @@ entries = os.path.join(cosmic, "com.system76.CosmicPanel", "v1", "entries")
 
 names = []
 if os.path.exists(entries):
-    try:
-        raw = open(entries).read()
-        names = [n for n in json.loads(raw) if isinstance(n, str)]
-    except Exception:
-        names = []
+    # ⚠️ COSMIC écrit ce tableau avec une virgule finale (`["Dock",]`) : ce n'est PAS du JSON
+    # valide, json.loads échoue. On extrait donc les chaînes, sans dépendre de la syntaxe.
+    names = re.findall(r'"([^"]+)"', open(entries).read())
 if not names:
     names = ["Panel"]  # repli : nom par défaut de COSMIC
 
