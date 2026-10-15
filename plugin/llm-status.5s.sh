@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-"""cbar plugin — occupation temps réel des LLM locaux du LAN (dashboard + /slots).
+"""cbar plugin — état temps réel des LLM locaux du LAN, une pastille par PC.
 
-Affiche dans le panneau COSMIC :  🟢 🤖 <tâches actives>/<slots totaux en ligne>
-Popup (clic gauche) : détail par nœud, file de prompts, liens.
+Panneau COSMIC : une pastille par machine, toujours visible, avec la couleur de son état :
+    🟢 vert    aucune tâche en cours (tout est disponible)
+    🟠 orange  une partie des slots tourne, au moins un slot encore libre (ex. Marie 1/2)
+    🔴 rouge   tous les slots tournent (machine saturée)
+    ⚫ gris    serveur arrêté ou PC hors ligne
+Le rendu est un SVG unique (cbar n'accepte qu'une image par ligne) : lettres G / M / L en
+blanc sur pastille colorée — la couleur ne dépend donc pas du thème clair/sombre.
 
 Source de vérité des slots : l'API HTTP de chaque llama-server (/slots) — jamais une valeur
-écrite en dur. Un serveur relancé avec -np 2 au lieu de 1 fait donc passer le compteur de
-« 2/4 » à « 2/5 » au cycle suivant, sans rien reconfigurer.
+écrite en dur. Un serveur relancé avec -np 2 au lieu de 1 change donc la pastille tout seul
+(orange possible sur une machine à 2 slots, sans rien reconfigurer).
 Le port et le nom du modèle sont détectés dynamiquement (dashboard, llm_cmd, /props).
 
 Résilience réseau : les noms `.lan` dépendent du DNS de la box, que systemd-resolved peut
 ignorer en basculant sur 1.1.1.1. Chaque appel au dashboard réessaie donc sur l'IP avec un
-en-tête Host explicite, et les nœuds sont interrogés directement en IP : le plugin
-fonctionne même sans résolution de noms.
+en-tête Host explicite, et les nœuds sont interrogés directement en IP.
 
-Sortie (format cbar) : 1re ligne = texte du panneau, puis « --- », puis entrées du popup.
+Sortie (format cbar) : 1re ligne = panneau (image SVG), puis « --- », puis entrées du popup.
 Toujours exit 0 : un code de sortie non nul afficherait « llm-status ! » dans le panneau.
 """
 
@@ -30,6 +34,12 @@ from concurrent.futures import ThreadPoolExecutor
 TIMEOUT = float(os.environ.get("LLM_HTTP_TIMEOUT", "2.5"))
 DEFAULT_PORT = 8080
 
+# Étiquettes de couleur (même vocabulaire que le dashboard)
+COLOR_FREE = "#22c55e"     # disponible
+COLOR_PARTIAL = "#f59e0b"  # partiellement occupé (au moins un slot libre)
+COLOR_BUSY = "#ef4444"     # tous les slots occupés
+COLOR_OFF = "#6b7280"      # arrêté / hors ligne
+
 # Cibles du dashboard : (base, en-tête Host à forcer ou None). 2e = repli sans DNS.
 DASH_TARGETS = [
     (os.environ.get("LLM_DASH_URL", "http://dashboard.lan"), None),
@@ -44,11 +54,12 @@ QUEUE_TARGETS = [
     (os.environ.get("LLM_QUEUE_FALLBACK", "http://192.168.3.102:8108"), None),
 ]
 
-# Nœuds surveillés : id, libellé, IP, carte dashboard (None = nœud Windows/Strata).
+# Machines surveillées : id, lettre de la pastille, libellé, IP, carte dashboard
+# (card=None → nœud Windows/Strata, interrogé via /api/llm-224).
 DEFAULT_NODES = [
-    {"id": "224", "label": ".224", "ip": "192.168.3.224", "card": None},
-    {"id": "louis", "label": "Louis .206", "ip": "192.168.3.206", "card": "louis"},
-    {"id": "marie", "label": "Marie .57", "ip": "192.168.3.57", "card": "marie"},
+    {"id": "224", "letter": "G", "label": "Gabriel .224", "ip": "192.168.3.224", "card": None},
+    {"id": "marie", "letter": "M", "label": "Marie .57", "ip": "192.168.3.57", "card": "marie"},
+    {"id": "louis", "letter": "L", "label": "Louis .206", "ip": "192.168.3.206", "card": "louis"},
 ]
 
 _working = {}  # mémorise la cible qui répond (évite les timeouts à répétition)
@@ -84,7 +95,7 @@ def get_json(path, kind="dash", timeout=TIMEOUT):
 
 
 def nodes_config():
-    """Liste des nœuds : surchargée par LLM_NODES_JSON (~/.config/cbar/env)."""
+    """Liste des machines : surchargée par LLM_NODES_JSON (~/.config/cbar/env)."""
     raw = os.environ.get("LLM_NODES_JSON", "").strip()
     if raw:
         try:
@@ -120,9 +131,10 @@ def decode_cmd(card):
 
 
 def probe_node(node):
-    """Un nœud : carte dashboard (modèle/port, enrichissement) + /slots (source de vérité)."""
+    """Une machine : carte dashboard (modèle/port, enrichissement) + /slots (source de vérité)."""
     res = {
         "id": node["id"],
+        "letter": (node.get("letter") or (node.get("label") or "?")[:1]).upper(),
         "label": node["label"],
         "ip": node["ip"],
         "state": "offline",  # online | stopped | offline
@@ -157,7 +169,7 @@ def probe_node(node):
         if str(total).isdigit():
             res["slots"] = int(total)  # repli si /slots est injoignable
 
-    # /slots décide de l'état : le serveur répond = le nœud est en ligne.
+    # /slots décide de l'état : le serveur répond = la machine est en ligne.
     for port in (res["port"], DEFAULT_PORT):
         if not port:
             continue
@@ -180,6 +192,53 @@ def probe_node(node):
         res["state"] = "online"  # /slots muet mais le collecteur annonce le serveur actif
 
     return res
+
+
+def node_level(node):
+    """Niveau d'occupation : free | partial | busy | off."""
+    if node["state"] != "online" or not node["slots"]:
+        return "off"
+    if node["active"] <= 0:
+        return "free"
+    if node["active"] >= node["slots"]:
+        return "busy"
+    return "partial"
+
+
+def level_color(level):
+    return {
+        "free": COLOR_FREE,
+        "partial": COLOR_PARTIAL,
+        "busy": COLOR_BUSY,
+        "off": COLOR_OFF,
+    }[level]
+
+
+LEVEL_DOT = {"free": "🟢", "partial": "🟠", "busy": "🔴", "off": "⚫"}
+
+
+def panel_svg(nodes):
+    """Un seul SVG (cbar n'accepte qu'une image par ligne) : les pastilles G / M / L."""
+    radius, gap, pad, height = 10.5, 6.0, 0.5, 22.0
+    diameter = 2 * radius + 2 * pad
+    step = diameter + gap
+    width = len(nodes) * step - gap
+
+    parts = [
+        '<svg xmlns="http://www.w3.org/2000/svg" width="%.0f" height="%.0f" '
+        'viewBox="0 0 %.0f %.0f">' % (width, height, width, height)
+    ]
+    for index, node in enumerate(nodes):
+        cx = pad + radius + index * step
+        color = level_color(node_level(node))
+        parts.append('<circle cx="%.2f" cy="11" r="%.2f" fill="%s"/>' % (cx, radius, color))
+        parts.append(
+            '<text x="%.2f" y="15.4" text-anchor="middle" font-family="sans-serif" '
+            'font-size="13" font-weight="700" fill="#ffffff">%s</text>'
+            % (cx, node["letter"])
+        )
+    parts.append("</svg>")
+    return "".join(parts)
 
 
 def short_model(name):
@@ -206,19 +265,17 @@ def main():
     q_run = counts.get("in_progress", 0) or 0
     q_wait = counts.get("pending", 0) or 0
 
-    # --- première ligne = panneau ---
-    dot = "🟢" if active else ("⚪" if online else "⚫")
-    head = ("%s 🤖 %d/%d" % (dot, active, capacity)) if online else (dot + " 🤖 —")
-    if q_run or q_wait:
-        head += " · ⏳%d" % (q_run + q_wait)
-    print(head)
+    # --- 1re ligne = panneau : pastilles colorées (titre vide, image seule) ---
+    print("| image=" + base64.b64encode(panel_svg(probed).encode()).decode())
 
     # --- popup ---
     print("---")
     for n in probed:
+        level = node_level(n)
         if n["state"] == "online":
-            icon = "🟢" if n["active"] else "⚪"
-            line = "%s %s — %d/%d · %s" % (icon, n["label"], n["active"], n["slots"], short_model(n["model"]))
+            line = "%s %s — %d/%d · %s" % (
+                LEVEL_DOT[level], n["label"], n["active"], n["slots"], short_model(n["model"])
+            )
         elif n["state"] == "stopped":
             line = "⚫ %s — serveur arrêté" % n["label"]
         else:
@@ -241,6 +298,7 @@ def main():
     else:
         print("⏳ File de prompts : vide | href=%s" % queue_url)
 
+    print("Légende : 🟢 libre · 🟠 partiel · 🔴 saturé · ⚫ arrêté | disabled=true")
     print("🖥️ Dashboard complet | href=%s/" % DASH_TARGETS[0][0])
     print("🔄 Rafraîchir | refresh=true")
 
@@ -249,7 +307,13 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as err:  # jamais d'exit non nul : cbar afficherait « llm-status ! »
-        print("🤖 —")
+        fallback = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">'
+            '<circle cx="11" cy="11" r="10.5" fill="#6b7280"/>'
+            '<text x="11" y="15.4" text-anchor="middle" font-family="sans-serif" '
+            'font-size="13" font-weight="700" fill="#ffffff">?</text></svg>'
+        )
+        print("| image=" + base64.b64encode(fallback.encode()).decode())
         print("---")
         print("⚠️ Erreur du plugin : %s: %s | disabled=true" % (type(err).__name__, err))
         print("🔄 Rafraîchir | refresh=true")

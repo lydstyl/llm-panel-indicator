@@ -2,15 +2,20 @@
 
 Indicateur **temps réel de l'activité des LLM locaux** dans la barre système du panneau **COSMIC** (Pop!_OS 24.04).
 
-Le panneau affiche `🤖 2/4` = **tâches en cours / slots de génération disponibles**, et le popup
+Le panneau affiche **une pastille par machine**, toujours visible, colorée selon son état ; le popup
 (clic gauche) détaille nœud par nœud : occupation, modèle chargé, file de prompts, liens.
 
 ```
-⚪ 🤖 0/4                 tout est libre
-🟢 🤖 2/4                 deux générations en cours
-🟢 🤖 2/4 · ⏳3           + 3 prompts en attente dans la file
-⚫ 🤖 —                   aucun LLM local joignable
+  ⬤ ⬤ ⬤        pastilles G (Gabriel .224) · M (Marie .57) · L (Louis .206)
+
+  🟢 vert    aucune tâche en cours — machine disponible
+  🟠 orange  une partie des slots tourne, au moins un slot encore libre (ex. Marie 1/2)
+  🔴 rouge   tous les slots tournent — machine saturée
+  ⚫ gris    serveur arrêté ou PC hors ligne
 ```
+
+Les pastilles sont dessinées en **SVG** (un seul par ligne — cbar n'accepte qu'une image par ligne) :
+lettres blanches sur fond coloré, donc lisibles quel que soit le thème clair/sombre du panneau.
 
 ## Installation (un PC Pop!_OS / COSMIC)
 
@@ -72,15 +77,15 @@ Surcharge via `~/.config/cbar/env` :
 
 ```bash
 # une seule ligne par variable (le JSON doit tenir sur une ligne)
-LLM_NODES_JSON='[{"id":"224","label":".224","ip":"192.168.3.224","card":null},{"id":"louis","label":"Louis .206","ip":"192.168.3.206","card":"louis"},{"id":"marie","label":"Marie .57","ip":"192.168.3.57","card":"marie"}]'
+LLM_NODES_JSON='[{"id":"224","letter":"G","label":"Gabriel .224","ip":"192.168.3.224","card":null},{"id":"marie","letter":"M","label":"Marie .57","ip":"192.168.3.57","card":"marie"},{"id":"louis","letter":"L","label":"Louis .206","ip":"192.168.3.206","card":"louis"}]'
 LLM_DASH_URL="http://dashboard.lan"
 LLM_QUEUE_URL="http://prompts.gab.lan"
 LLM_HTTP_TIMEOUT="2.5"
 ```
 
-`card` = nom de la carte du dashboard (`/api/pc-<card>`) ; `null` = nœud Windows/Strata
-(utilise `/api/llm-224`). Le nœud `.224` est automatiquement compté **une seule fois**,
-que la machine ait booté Windows (Strata) ou Pop OS (llama.cpp).
+`letter` = lettre affichée dans la pastille du panneau ; `card` = nom de la carte du dashboard
+(`/api/pc-<card>`), `null` pour un nœud Windows/Strata (via `/api/llm-224`). Le nœud `.224` est
+compté **une seule fois**, que la machine ait booté Windows ou Pop OS.
 
 ## Vérification / dépannage
 
