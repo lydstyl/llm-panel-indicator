@@ -4,6 +4,11 @@
 #   curl -fsSL https://raw.githubusercontent.com/lydstyl/llm-panel-indicator/main/install.sh | bash
 #   curl -fsSL .../install.sh | bash -s -- --no-panel     # sans toucher à la config du panneau
 #
+# Si l'installeur vient d'être modifié (moins de ~10 min), raw.githubusercontent peut servir
+# l'ancienne version (CDN) : passer par l'API, qui répond immédiatement —
+#   curl -fsSL -H "Accept: application/vnd.github.raw" \
+#     "https://api.github.com/repos/lydstyl/llm-panel-indicator/contents/install.sh?ref=main" | bash
+#
 # Ce que ça fait, dans l'ordre :
 #   1. installe l'applet hôte « cbar » (release précompilée, dans ~/.local — aucun sudo) si absente ;
 #   2. sort les plugins de démonstration de cbar du dossier scanné (sinon ils s'affichent dans le panneau) ;
@@ -14,10 +19,22 @@
 # Relançable sans risque : rien n'est dupliqué, la config du panneau n'est modifiée qu'une seule fois.
 set -euo pipefail
 
-RAW="${LLM_INDICATOR_RAW:-https://raw.githubusercontent.com/lydstyl/llm-panel-indicator/main}"
+# ⚠️ raw.githubusercontent.com est derrière un CDN : juste après un push il peut servir l'ANCIENNE
+# version pendant plusieurs minutes (vécu, même avec un paramètre de cache-busting). Les fichiers
+# sont donc récupérés par l'API GitHub (autoritative, immédiate), avec repli sur raw.
+REPO_SLUG="${LLM_INDICATOR_REPO:-lydstyl/llm-panel-indicator}"
+REF="${LLM_INDICATOR_REF:-main}"
+RAW="${LLM_INDICATOR_RAW:-https://raw.githubusercontent.com/${REPO_SLUG}/${REF}}"
+API="${LLM_INDICATOR_API:-https://api.github.com/repos/${REPO_SLUG}/contents}"
 PLUGIN_NAME="llm-status.5s.sh"
 APPLET_ID="io.github.alexprates.CBar"
 CBAR_INSTALLER="https://raw.githubusercontent.com/alexandreprates/cbar/main/scripts/install-latest.sh"
+
+# fetch <chemin-dans-le-repo> <destination>
+fetch() {
+    curl -fsSL -m 20 -H "Accept: application/vnd.github.raw" "${API}/$1?ref=${REF}" -o "$2" 2>/dev/null && return 0
+    curl -fsSL -m 20 "${RAW}/$1" -o "$2"
+}
 
 HOME_DIR="${HOME}"
 PLUGIN_DIR="${HOME_DIR}/.config/cbar/plugins"
@@ -58,7 +75,7 @@ shopt -u nullglob
 note "$moved plugin(s) déplacé(s) vers $SHOWCASE_DIR"
 
 step "3/5 — plugin indicateur"
-curl -fsSL "${RAW}/plugin/${PLUGIN_NAME}" -o "${PLUGIN_DIR}/${PLUGIN_NAME}.new"
+fetch "plugin/${PLUGIN_NAME}" "${PLUGIN_DIR}/${PLUGIN_NAME}.new"
 chmod 0755 "${PLUGIN_DIR}/${PLUGIN_NAME}.new"
 mv "${PLUGIN_DIR}/${PLUGIN_NAME}.new" "${PLUGIN_DIR}/${PLUGIN_NAME}"
 note "installé : ${PLUGIN_DIR}/${PLUGIN_NAME}"
