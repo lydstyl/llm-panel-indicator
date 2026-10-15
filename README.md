@@ -70,6 +70,13 @@ LLM_INDICATOR_HOSTS="laptop gabriel-desktop-linux" ./scripts/deploy-all.sh
 `scripts/deploy-all.sh` enchaîne l'installeur en SSH sur chaque hôte (liste via
 `LLM_INDICATOR_HOSTS`), et rapporte les échecs sans s'arrêter.
 
+L'installeur déclare l'applet dans **le ou les panneaux réellement actifs**, dont les noms sont lus
+dans `~/.config/cosmic/com.system76.CosmicPanel/v1/entries` (le panneau s'appelle « Panel » sur
+certaines machines, « Dock » sur d'autres — patcher le mauvais fichier ne produit *aucune* erreur et
+*aucun* effet). Juste après une modification de ce repo, `raw.githubusercontent.com` peut servir
+l'ancienne version pendant plusieurs minutes (CDN) : passer alors par l'API GitHub, indiquée en tête
+de `install.sh`.
+
 ## Configuration
 
 **Nœuds surveillés** — par défaut `.224` (dual-boot Windows/Pop), `Louis .206`, `Marie .57`.
