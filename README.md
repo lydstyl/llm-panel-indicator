@@ -1,6 +1,7 @@
 # llm-panel-indicator
 
-Indicateur **temps réel de l'activité des LLM locaux** dans la barre système du panneau **COSMIC** (Pop!_OS 24.04).
+Indicateur **temps réel de l'activité des LLM locaux** dans la barre système du panneau **COSMIC** (Pop!_OS 24.04)
+et dans la **zone de notification Windows** (voir la section Windows plus bas).
 
 Le panneau affiche **une pastille par machine**, toujours visible, colorée selon son état ; le popup
 (clic gauche) détaille nœud par nœud : occupation, modèle chargé, file de prompts, liens.
@@ -93,6 +94,59 @@ LLM_HTTP_TIMEOUT="2.5"
 `letter` = lettre affichée dans la pastille du panneau ; `card` = nom de la carte du dashboard
 (`/api/pc-<card>`), `null` pour un nœud Windows/Strata (via `/api/llm-224`). Le nœud `.224` est
 compté **une seule fois**, que la machine ait booté Windows ou Pop OS.
+
+## Installation (Windows) — zone de notification
+
+Windows 11 **n'autorise plus les greffons dans la barre des tâches** (l'API *DeskBands* de Windows 7
+a disparu et l'Explorateur ne fournit aucune interface de ce type). L'équivalent le plus proche d'une
+applet COSMIC est une **icône de zone de notification**, à épingler pour qu'elle reste visible en
+permanence.
+
+```powershell
+irm https://raw.githubusercontent.com/lydstyl/llm-panel-indicator/main/windows/install-windows.ps1 | iex
+```
+
+Ou, si le dépôt vient d'être modifié (le CDN de `raw.githubusercontent` peut servir une version en
+cache pendant plusieurs minutes) :
+
+```powershell
+irm "https://api.github.com/repos/lydstyl/llm-panel-indicator/contents/windows/install-windows.ps1?ref=main" | iex
+```
+
+L'installeur dépose deux fichiers dans `%USERPROFILE%\llm-tray\`, place un lanceur dans le dossier
+**Démarrage** (démarrage automatique au logon, **sans droits administrateur ni tâche planifiée**),
+démarre l'indicateur et rappelle comment épingler l'icône.
+
+- **Icône** : trois pastilles **G / M / L**, même sémantique et mêmes couleurs que le panneau COSMIC
+  (vert libre · orange partiel · rouge saturé · gris arrêté/hors ligne).
+- **Survol** : état compact par machine (`G 0/1 · M 1/2 · L off`) — limité à 63 caractères par Windows.
+- **Clic gauche** : ouvre `dashboard.lan`. **Clic droit** : état détaillé par nœud (occupation, modèle,
+  file de prompts), liens, rafraîchir, quitter.
+- **Zéro dépendance** : Windows PowerShell 5.1 + .NET Framework (`System.Windows.Forms` / `System.Drawing`).
+
+Fichiers concernés : `windows/llm-tray.ps1` (l'indicateur), `windows/llm-tray.vbs` (lancement sans
+console), `windows/install-windows.ps1` (installation).
+
+**Tests sans Windows** — le cœur du script (sondage HTTP + calcul d'état) est exécutable depuis
+Linux, coupé à la section interface, contre les vraies APIs du LAN :
+
+```bash
+windows/tests/run-core-tests.sh   # syntaxe + 7 contrôles d'intégrité (niveaux, cohérence, repli IP)
+```
+
+Notes techniques :
+
+- ⚠️ L'en-tête `Host` ne peut pas être passé par `-Headers` en PowerShell (interdit par .NET :
+  *« The 'Host' header must be modified using the appropriate property or method »*) → le script
+  utilise `HttpWebRequest.Host` pour joindre `dashboard.lan` par IP. Sans lui, nginx renvoie 404.
+- ⚠️ Syntaxe **Windows PowerShell 5.1** : `$x = if (...) {...} else {...}` est du PowerShell 7 et
+  provoque une erreur de syntaxe en 5.1 → `if/else` explicites.
+- ⚠️ `NotifyIcon.Text` est limité à **63 caractères** (au-delà : exception) → troncature systématique.
+- `GetHicon()` doit être suivi de `DestroyIcon` (P/Invoke) sinon **fuite de handles GDI** à chaque
+  rafraîchissement (toutes les 5 s).
+- Pour un affichage **dans** la barre des tâches Windows, il faudrait passer par TrafficMonitor
+  (plugin DLL en C++ compilé contre son API) ou Rainmeter (skin en surimpression) : nettement plus
+  lourd, non retenu ici.
 
 ## Vérification / dépannage
 
