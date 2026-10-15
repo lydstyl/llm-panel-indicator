@@ -23,7 +23,6 @@ HOME_DIR="${HOME}"
 PLUGIN_DIR="${HOME_DIR}/.config/cbar/plugins"
 SHOWCASE_DIR="${HOME_DIR}/.config/cbar/showcase"
 CBAR_BIN="${HOME_DIR}/.local/bin/cbar"
-PANEL_CFG="${HOME_DIR}/.config/cosmic/com.system76.CosmicPanel.Panel/v1/plugins_wings"
 
 SKIP_PANEL=0
 for arg in "$@"; do
@@ -67,29 +66,49 @@ note "installé : ${PLUGIN_DIR}/${PLUGIN_NAME}"
 step "4/5 — panneau COSMIC"
 if [[ "$SKIP_PANEL" -eq 1 ]]; then
     note "ignoré (--no-panel) — ajouter l'applet à la main : clic droit sur le panneau → Paramètres → Applets"
-elif [[ ! -f "$PANEL_CFG" ]]; then
-    note "config $PANEL_CFG absente (COSMIC ne l'a pas encore écrite)."
-    note "Ouvrir une fois les paramètres du panneau puis relancer ce script, ou ajouter l'applet à la main."
 else
-    python3 - "$PANEL_CFG" "$APPLET_ID" <<'PY'
-import re, shutil, sys, time
-cfg, applet = sys.argv[1], sys.argv[2]
-src = open(cfg).read()
+    # ⚠️ Le panneau actif ne s'appelle pas forcément « Panel » : les noms sont listés dans
+    # com.system76.CosmicPanel/v1/entries (ex. « Dock » sur le desktop .224, « Panel » sur le laptop).
+    # Patcher un panneau non listé ne produit AUCUN effet (vécu : applet invisible, aucun log).
+    python3 - "$HOME_DIR" "$APPLET_ID" <<'PY'
+import json, os, re, shutil, sys, time
 
-if applet in src:
-    print(f"  · applet déjà déclaré dans {cfg}")
-    raise SystemExit(0)
+home, applet = sys.argv[1], sys.argv[2]
+cosmic = os.path.join(home, ".config", "cosmic")
+entries = os.path.join(cosmic, "com.system76.CosmicPanel", "v1", "entries")
 
-m = re.search(r"\],\s*\[", src)
-if not m:
-    print("  ! structure inattendue de plugins_wings — ajouter l'applet à la main")
-    raise SystemExit(0)
+names = []
+if os.path.exists(entries):
+    try:
+        raw = open(entries).read()
+        names = [n for n in json.loads(raw) if isinstance(n, str)]
+    except Exception:
+        names = []
+if not names:
+    names = ["Panel"]  # repli : nom par défaut de COSMIC
 
-shutil.copy2(cfg, f"{cfg}.bak-llm-indicator-{time.strftime('%Y%m%d-%H%M%S')}")
-head, tail = src[: m.end()], src[m.end():]
-new = f'{head}\n    "{applet}",' + tail
-open(cfg, "w").write(new)
-print(f"  · applet ajouté en tête de l'aile droite (sauvegarde .bak-llm-indicator-*)")
+patched = 0
+for name in names:
+    cfg = os.path.join(cosmic, "com.system76.CosmicPanel.%s" % name, "v1", "plugins_wings")
+    if not os.path.exists(cfg):
+        print("  ! panneau « %s » : %s absent — l'ajouter à la main (Paramètres → Applets)" % (name, cfg))
+        continue
+    src = open(cfg).read()
+    if applet in src:
+        print("  · panneau « %s » : applet déjà déclaré" % name)
+        patched += 1
+        continue
+    m = re.search(r"\],\s*\[", src)
+    if not m:
+        print("  ! panneau « %s » : structure inattendue de plugins_wings" % name)
+        continue
+    shutil.copy2(cfg, "%s.bak-llm-indicator-%s" % (cfg, time.strftime("%Y%m%d-%H%M%S")))
+    open(cfg, "w").write(src[: m.end()] + '\n    "%s",' % applet + src[m.end():])
+    print("  · panneau « %s » : applet ajouté en tête de l'aile droite" % name)
+    patched += 1
+
+if not patched:
+    print("  ! aucun panneau actif modifié — ajouter l'applet à la main (Paramètres → Applets)")
 PY
 fi
 
