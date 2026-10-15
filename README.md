@@ -41,7 +41,6 @@ llama-server /slots  ─┐
 dashboard.lan /api/* ─┼─►  llm-status.5s.sh  ──►  cbar  ──►  panneau COSMIC
 prompts.gab.lan/stats ┘        (python3)
 ```
-
 - **Source de vérité des slots : `/slots` de chaque `llama-server`.** Le nombre de tâches simultanées
   n'est jamais écrit en dur : si un serveur est relancé avec `-np 2` au lieu de `1`, le compteur
   (`2/4` → `2/5`) suit automatiquement au cycle suivant. Idem pour le nom du modèle et le port
@@ -51,6 +50,20 @@ prompts.gab.lan/stats ┘        (python3)
 - **Résilience** : un nœud injoignable est marqué « hors ligne », un serveur arrêté « serveur arrêté »,
   et le plugin ne sort jamais en erreur (un code de sortie non nul afficherait `llm-status.5s.sh !`).
 - Intervalle = nom du fichier (`.5s` = 5 s). Fréquence réglable en le renommant.
+- **Indépendant du DNS** : les noms `.lan` peuvent échouer (systemd-resolved qui bascule sur
+  1.1.1.1). Chaque appel au dashboard réessaie sur l'IP `192.168.3.102` avec un `Host: dashboard.lan`
+  explicite, et les nœuds sont interrogés directement en IP — le plugin marche même sans résolution.
+
+## Déployer sur plusieurs PC
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lydstyl/llm-panel-indicator/main/install.sh | bash
+# ou, depuis une machine qui a les accès SSH :
+LLM_INDICATOR_HOSTS="laptop gabriel-desktop-linux" ./scripts/deploy-all.sh
+```
+
+`scripts/deploy-all.sh` enchaîne l'installeur en SSH sur chaque hôte (liste via
+`LLM_INDICATOR_HOSTS`), et rapporte les échecs sans s'arrêter.
 
 ## Configuration
 

@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
-"""cbar plugin — occupation temps réel des LLM locaux du LAN (dashboard.lan).
+"""cbar plugin — occupation temps réel des LLM locaux du LAN (dashboard + /slots).
 
 Affiche dans le panneau COSMIC :  🟢 🤖 <tâches actives>/<slots totaux en ligne>
-Popup : détail par nœud + file de prompts (Prompt Queue).
+Popup (clic gauche) : détail par nœud, file de prompts, liens.
 
-Source de vérité des slots : l'API HTTP de chaque llama-server (/slots), donc si un
-serveur est relancé avec -np 2 au lieu de 1, le compteur suit tout seul (aucune config).
-Le nom du modèle et le port sont lus dynamiquement (dashboard.lan + /props).
+Source de vérité des slots : l'API HTTP de chaque llama-server (/slots) — jamais une valeur
+écrite en dur. Un serveur relancé avec -np 2 au lieu de 1 fait donc passer le compteur de
+« 2/4 » à « 2/5 » au cycle suivant, sans rien reconfigurer.
+Le port et le nom du modèle sont détectés dynamiquement (dashboard, llm_cmd, /props).
+
+Résilience réseau : les noms `.lan` dépendent du DNS de la box, que systemd-resolved peut
+ignorer en basculant sur 1.1.1.1. Chaque appel au dashboard réessaie donc sur l'IP avec un
+en-tête Host explicite, et les nœuds sont interrogés directement en IP : le plugin
+fonctionne même sans résolution de noms.
 
 Sortie (format cbar) : 1re ligne = texte du panneau, puis « --- », puis entrées du popup.
-Toujours exit 0 (un code de sortie non nul afficherait « <plugin> ! » dans le panneau).
+Toujours exit 0 : un code de sortie non nul afficherait « llm-status ! » dans le panneau.
 """
 
 from __future__ import annotations
@@ -21,17 +27,60 @@ import re
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-DASH = os.environ.get("LLM_DASH_URL", "http://dashboard.lan")
-PQ = os.environ.get("LLM_QUEUE_URL", "http://prompts.gab.lan")
 TIMEOUT = float(os.environ.get("LLM_HTTP_TIMEOUT", "2.5"))
 DEFAULT_PORT = 8080
 
-# Nœuds surveillés : id, libellé, IP. Le port est détecté (llm_cmd puis /props puis 8080).
+# Cibles du dashboard : (base, en-tête Host à forcer ou None). 2e = repli sans DNS.
+DASH_TARGETS = [
+    (os.environ.get("LLM_DASH_URL", "http://dashboard.lan"), None),
+    (
+        os.environ.get("LLM_DASH_FALLBACK", "http://192.168.3.102"),
+        os.environ.get("LLM_DASH_HOST_HEADER", "dashboard.lan"),
+    ),
+]
+# Cibles de la file de prompts (port direct en repli).
+QUEUE_TARGETS = [
+    (os.environ.get("LLM_QUEUE_URL", "http://prompts.gab.lan"), None),
+    (os.environ.get("LLM_QUEUE_FALLBACK", "http://192.168.3.102:8108"), None),
+]
+
+# Nœuds surveillés : id, libellé, IP, carte dashboard (None = nœud Windows/Strata).
 DEFAULT_NODES = [
     {"id": "224", "label": ".224", "ip": "192.168.3.224", "card": None},
     {"id": "louis", "label": "Louis .206", "ip": "192.168.3.206", "card": "louis"},
     {"id": "marie", "label": "Marie .57", "ip": "192.168.3.57", "card": "marie"},
 ]
+
+_working = {}  # mémorise la cible qui répond (évite les timeouts à répétition)
+
+
+def _fetch(url, host=None, timeout=TIMEOUT):
+    """GET JSON ; None si injoignable ou réponse invalide. Jamais d'exception."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "cbar-llm-status"})
+        if host:
+            req.add_header("Host", host)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.load(resp)
+    except Exception:
+        return None
+
+
+def get_json(path, kind="dash", timeout=TIMEOUT):
+    """GET JSON sur les cibles de `kind`, dans l'ordre (celle qui marche passe en premier)."""
+    targets = DASH_TARGETS if kind == "dash" else QUEUE_TARGETS
+    order = list(range(len(targets)))
+    if kind in _working and _working[kind] in order:
+        order.remove(_working[kind])
+        order.insert(0, _working[kind])
+
+    for idx in order:
+        base, host = targets[idx]
+        data = _fetch(base + path, host=host, timeout=timeout)
+        if data is not None:
+            _working[kind] = idx
+            return data
+    return None
 
 
 def nodes_config():
@@ -45,16 +94,6 @@ def nodes_config():
         except json.JSONDecodeError:
             pass
     return DEFAULT_NODES
-
-
-def get_json(url, timeout=TIMEOUT):
-    """GET JSON → dict/list, ou None si injoignable / invalide. Jamais d'exception."""
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "cbar-llm-status"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.load(resp)
-    except Exception:
-        return None
 
 
 def port_from_cmd(cmd):
@@ -81,7 +120,7 @@ def decode_cmd(card):
 
 
 def probe_node(node):
-    """Interroge un nœud : carte dashboard (modèle/port/état) + /slots (occupation réelle)."""
+    """Un nœud : carte dashboard (modèle/port, enrichissement) + /slots (source de vérité)."""
     res = {
         "id": node["id"],
         "label": node["label"],
@@ -93,55 +132,52 @@ def probe_node(node):
         "slots": 0,
     }
 
-    card = None
-    if node.get("card"):
-        card = get_json(f"{DASH}/api/pc-{node['card']}")
+    card = get_json("/api/pc-" + str(node["card"])) if node.get("card") else None
+    card_ok = bool(card) and not card.get("error")
 
     if node["id"] == "224":
-        # .224 = dual-boot : soit Strata (Windows), soit llama.cpp (Pop OS).
-        info = get_json(f"{DASH}/api/llm-224")
+        # .224 = dual-boot : Strata sous Windows, llama.cpp sous Pop OS (jamais les deux).
+        info = get_json("/api/llm-224")
         if info and info.get("state") == "running":
-            res["state"] = "online"
             res["model"] = info.get("model") or ""
             res["port"] = info.get("port") or DEFAULT_PORT
-        elif card and not card.get("error") and card.get("llm_status") == "active":
-            res["state"] = "online"
+        elif card_ok and card.get("llm_status") == "active":
             res["model"] = card.get("llm_model") or ""
             res["port"] = port_from_cmd(decode_cmd(card))
-        elif card and not card.get("error"):
+        elif card_ok:
             res["state"] = "stopped"
             return res
-    else:
-        if not card or card.get("error"):
-            return res
+    elif card_ok:
         if card.get("llm_status") != "active":
             res["state"] = "stopped"
             return res
-        res["state"] = "online"
         res["model"] = card.get("llm_model") or ""
         res["port"] = port_from_cmd(decode_cmd(card))
         total = card.get("llm_slots_total")
         if str(total).isdigit():
             res["slots"] = int(total)  # repli si /slots est injoignable
 
-    # /slots = source de vérité (nb de slots et occupation réelle)
+    # /slots décide de l'état : le serveur répond = le nœud est en ligne.
+    for port in (res["port"], DEFAULT_PORT):
+        if not port:
+            continue
+        slots = _fetch("http://%s:%s/slots" % (res["ip"], port))
+        if isinstance(slots, list):
+            res["state"] = "online"
+            res["port"] = port
+            res["slots"] = len(slots) or 1
+            res["active"] = sum(1 for s in slots if s.get("is_processing"))
+            break
+
     if res["state"] == "online":
-        for port in (res["port"], DEFAULT_PORT):
-            if not port:
-                continue
-            slots = get_json(f"http://{res['ip']}:{port}/slots")
-            if isinstance(slots, list):
-                res["port"] = port
-                res["slots"] = len(slots) or 1
-                res["active"] = sum(1 for s in slots if s.get("is_processing"))
-                break
-        # /props : nom de modèle à jour si la carte ne le donne pas
         if not res["model"] and res["port"]:
-            props = get_json(f"http://{res['ip']}:{res['port']}/props")
+            props = _fetch("http://%s:%s/props" % (res["ip"], res["port"]))
             if props:
                 res["model"] = (props.get("model_path") or "").split("/")[-1]
         if not res["slots"]:
             res["slots"] = 1
+    elif res["slots"]:
+        res["state"] = "online"  # /slots muet mais le collecteur annonce le serveur actif
 
     return res
 
@@ -165,16 +201,16 @@ def main():
     active = sum(n["active"] for n in online)
     capacity = sum(n["slots"] for n in online)
 
-    queue = get_json(f"{PQ}/api/stats") or {}
-    counts = queue.get("counts", {}) if isinstance(queue, dict) else {}
+    stats = get_json("/api/stats", kind="queue")
+    counts = stats.get("counts", {}) if isinstance(stats, dict) else {}
     q_run = counts.get("in_progress", 0) or 0
     q_wait = counts.get("pending", 0) or 0
 
     # --- première ligne = panneau ---
     dot = "🟢" if active else ("⚪" if online else "⚫")
-    head = f"{dot} 🤖 {active}/{capacity}" if online else f"{dot} 🤖 —"
+    head = ("%s 🤖 %d/%d" % (dot, active, capacity)) if online else (dot + " 🤖 —")
     if q_run or q_wait:
-        head += f" · ⏳{q_run + q_wait}"
+        head += " · ⏳%d" % (q_run + q_wait)
     print(head)
 
     # --- popup ---
@@ -182,32 +218,38 @@ def main():
     for n in probed:
         if n["state"] == "online":
             icon = "🟢" if n["active"] else "⚪"
-            line = f"{icon} {n['label']} — {n['active']}/{n['slots']} · {short_model(n['model'])}"
+            line = "%s %s — %d/%d · %s" % (icon, n["label"], n["active"], n["slots"], short_model(n["model"]))
         elif n["state"] == "stopped":
-            line = f"⚫ {n['label']} — serveur arrêté"
+            line = "⚫ %s — serveur arrêté" % n["label"]
         else:
-            line = f"⚫ {n['label']} — hors ligne"
-        print(f"{line} | disabled=true")
+            line = "⚫ %s — hors ligne" % n["label"]
+        print(line + " | disabled=true")
 
     if online:
-        print(f"🖥️ {active} tâche(s) en cours · {capacity} slot(s) sur {len(online)} serveur(s) | disabled=true")
+        print(
+            "🖥️ %d tâche(s) en cours · %d slot(s) sur %d serveur(s) en ligne | disabled=true"
+            % (active, capacity, len(online))
+        )
     else:
         print("🖥️ Aucun LLM local en ligne | disabled=true")
 
-    if q_run or q_wait:
-        print(f"⏳ File de prompts : {q_run} en cours, {q_wait} en attente | href={PQ}/")
+    queue_url = QUEUE_TARGETS[0][0] + "/"
+    if stats is None:
+        print("⏳ File de prompts : injoignable | disabled=true")
+    elif q_run or q_wait:
+        print("⏳ File de prompts : %d en cours, %d en attente | href=%s" % (q_run, q_wait, queue_url))
     else:
-        print(f"⏳ File de prompts : vide | href={PQ}/")
+        print("⏳ File de prompts : vide | href=%s" % queue_url)
 
-    print(f"🖥️ Dashboard complet | href={DASH}/")
+    print("🖥️ Dashboard complet | href=%s/" % DASH_TARGETS[0][0])
     print("🔄 Rafraîchir | refresh=true")
 
 
 if __name__ == "__main__":
     try:
         main()
-    except Exception as err:  # jamais d'exit non nul : cbar afficherait « <plugin> ! »
+    except Exception as err:  # jamais d'exit non nul : cbar afficherait « llm-status ! »
         print("🤖 —")
         print("---")
-        print(f"⚠️ Erreur du plugin : {type(err).__name__}: {err} | disabled=true")
+        print("⚠️ Erreur du plugin : %s: %s | disabled=true" % (type(err).__name__, err))
         print("🔄 Rafraîchir | refresh=true")
