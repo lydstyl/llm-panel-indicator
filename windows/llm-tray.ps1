@@ -1,4 +1,4 @@
-<#
+﻿<#
     llm-tray.ps1 — indicateur « LLM locaux » dans la zone de notification Windows.
 
     Windows 11 n'autorise plus les greffons dans la barre des tâches (l'API DeskBand est morte) :
@@ -15,6 +15,11 @@
 
     Zéro dépendance : Windows PowerShell 5.1 + .NET Framework (System.Windows.Forms / System.Drawing).
     Lancement au logon : windows/llm-tray.vbs (voir install-windows.ps1).
+
+    ⚠️ ENCODAGE : ce fichier doit rester enregistré en UTF-8 **AVEC BOM**. PowerShell 5.1 (le shell
+    standard de Windows 11) lit un .ps1 sans BOM comme de l'ANSI/CP1252 : « · » sort alors « Â· » et
+    tous les accents sont cassés. Ne jamais réenregistrer ce fichier sans BOM ; en cas de doute,
+    install-windows.ps1 réapplique le BOM après téléchargement.
 
     ⚠️ Syntaxe Windows PowerShell 5.1 : pas d'assignation depuis un `if` (`$x = if (...) {...}`
     est du PowerShell 7 et casse en 5.1) — d'où les if/else explicites ci-dessous.
@@ -320,21 +325,21 @@ function Update-Interface {
             [void]$menu.Items.Add($item)
         }
 
-        $summaryText = '🖥️ Aucun LLM local en ligne'
+        $summaryText = 'Aucun LLM local en ligne'
         if ($online -gt 0) {
-            $summaryText = '🖥️ {0} tâche(s) en cours · {1} slot(s) sur {2} serveur(s)' -f $active, $capacity, $online
+            $summaryText = '{0} tâche(s) en cours · {1} slot(s) sur {2} serveur(s)' -f $active, $capacity, $online
         }
         $summary = New-Object System.Windows.Forms.ToolStripMenuItem
         $summary.Text = $summaryText
         $summary.Enabled = $false
         [void]$menu.Items.Add($summary)
 
-        $qLabel = '⏳ File de prompts : injoignable'
+        $qLabel = 'File de prompts : injoignable'
         if ($queue) {
             if ($qRun -or $qWait) {
-                $qLabel = '⏳ File : {0} en cours, {1} en attente' -f $qRun, $qWait
+                $qLabel = 'File : {0} en cours, {1} en attente' -f $qRun, $qWait
             } else {
-                $qLabel = '⏳ File de prompts : vide'
+                $qLabel = 'File de prompts : vide'
             }
         }
         $qItem = New-Object System.Windows.Forms.ToolStripMenuItem

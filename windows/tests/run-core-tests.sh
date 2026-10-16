@@ -30,12 +30,23 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# 1) contrôle syntaxique du fichier livré, en entier
+# 1) contrôle syntaxique des fichiers livrés, en entier (+ contrôle du BOM UTF-8)
 "$PWSH" -NoProfile -Command "
-\$e=\$null; \$t=\$null
-[System.Management.Automation.Language.Parser]::ParseFile('$SCRIPT',[ref]\$t,[ref]\$e) | Out-Null
-if (\$e.Count) { \$e | ForEach-Object { Write-Host ('L' + \$_.Extent.StartLineNumber + ' : ' + \$_.Message) }; exit 1 }
-Write-Host ('✓ syntaxe OK (' + \$t.Count + ' tokens)')
+\$files = Get-ChildItem '$HERE/..' -Filter '*.ps1'
+\$ko = \$false
+foreach (\$f in \$files) {
+    \$e=\$null; \$t=\$null
+    [System.Management.Automation.Language.Parser]::ParseFile(\$f.FullName,[ref]\$t,[ref]\$e) | Out-Null
+    if (\$e.Count) { \$ko=\$true; Write-Host ('✗ ' + \$f.Name); \$e | ForEach-Object { Write-Host ('   L' + \$_.Extent.StartLineNumber + ' : ' + \$_.Message) } }
+    else {
+        \$b = [System.IO.File]::ReadAllBytes(\$f.FullName)
+        \$bom = (\$b[0] -eq 0xEF -and \$b[1] -eq 0xBB -and \$b[2] -eq 0xBF)
+        # sans BOM, PowerShell 5.1 lit le .ps1 en ANSI (CP1252) et casse tous les accents
+        if (\$bom) { Write-Host ('✓ ' + \$f.Name + ' — syntaxe OK, UTF-8 avec BOM (' + \$t.Count + ' tokens)') }
+        else { \$ko=\$true; Write-Host ('✗ ' + \$f.Name + ' — UTF-8 SANS BOM : PowerShell 5.1 cassera les accents (· → Â·)') }
+    }
+}
+if (\$ko) { exit 1 }
 " || exit 1
 
 # 2) construction du banc : jusqu'à la section interface, sans les assembly Windows

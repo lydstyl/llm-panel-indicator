@@ -136,6 +136,13 @@ windows/tests/run-core-tests.sh   # syntaxe + 7 contrôles d'intégrité (niveau
 
 Notes techniques :
 
+- ⚠️ **ENCODAGE — la panne n° 1, invisible :** PowerShell **5.1 lit un `.ps1` sans BOM comme de l'ANSI
+  (CP1252)**, pas comme de l'UTF-8 → `·` s'affiche `Â·` et tous les accents cassent (constaté sur le
+  laptop Windows 11). Les `.ps1` de ce dépôt sont donc **UTF-8 AVEC BOM**, `install-windows.ps1`
+  réapplique le BOM après téléchargement, et `run-core-tests.sh` **échoue** si un `.ps1` perd son BOM.
+  Le `.vbs` est maintenu en ASCII pur pour la même raison.
+- ⚠️ Les **emoji dans les menus WinForms** (Segoe UI, sans fallback emoji fiable) sortent en carrés :
+  les libellés du menu sont en texte simple.
 - ⚠️ L'en-tête `Host` ne peut pas être passé par `-Headers` en PowerShell (interdit par .NET :
   *« The 'Host' header must be modified using the appropriate property or method »*) → le script
   utilise `HttpWebRequest.Host` pour joindre `dashboard.lan` par IP. Sans lui, nginx renvoie 404.
