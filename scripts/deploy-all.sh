@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Déploie / met à jour l'indicateur sur plusieurs PC Pop!_OS/COSMIC du LAN, en SSH.
 #
-#   ./deploy-all.sh                       # hôtes par défaut (aliases ~/.ssh/config)
+#   ./deploy-all.sh                       # hôtes par défaut : laptop, gabriel-desktop-linux, skillorp
 #   LLM_INDICATOR_HOSTS="laptop gabriel-desktop-linux" ./deploy-all.sh
 #
 # L'installeur distant est idempotent : relancer ce script = mettre à jour le plugin
@@ -9,7 +9,7 @@
 set -uo pipefail
 
 RAW="${LLM_INDICATOR_RAW:-https://raw.githubusercontent.com/lydstyl/llm-panel-indicator/main}"
-HOSTS="${LLM_INDICATOR_HOSTS:-laptop gabriel-desktop-linux}"
+HOSTS="${LLM_INDICATOR_HOSTS:-laptop gabriel-desktop-linux skillorp}"
 
 fail=0
 for host in $HOSTS; do
