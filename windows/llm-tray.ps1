@@ -64,7 +64,8 @@ $Script:DefaultPort = 8080
 $Script:Nodes = @(
     [pscustomobject]@{ Id = '224';   Letter = 'G'; Label = 'Gabriel .224'; Ip = '192.168.3.224'; Card = $null },
     [pscustomobject]@{ Id = 'marie'; Letter = 'M'; Label = 'Marie .57';    Ip = '192.168.3.57';  Card = 'marie' },
-    [pscustomobject]@{ Id = 'louis'; Letter = 'L'; Label = 'Louis .206';   Ip = '192.168.3.206'; Card = 'louis' }
+    [pscustomobject]@{ Id = 'louis'; Letter = 'L'; Label = 'Louis .206';   Ip = '192.168.3.206'; Card = 'louis' },
+    [pscustomobject]@{ Id = 'skillorp'; Letter = 'S'; Label = 'SkillORP .249'; Ip = '192.168.3.249'; Card = 'boncoin' }
 )
 
 $Script:LevelColor = @{
@@ -233,7 +234,11 @@ function Get-NodeState {
 function New-DotsIcon {
     param([string[]]$HexColors)
 
-    $bmp = New-Object System.Drawing.Bitmap 32, 32
+    # Largeur adaptée au nombre de pastilles : 4 machines = 42 px, jamais de débordement.
+    $count = $HexColors.Count
+    if ($count -lt 1) { $count = 1 }
+    $width = [math]::Max(32, 2 + $count * 10)
+    $bmp = New-Object System.Drawing.Bitmap $width, 32
     $gfx = [System.Drawing.Graphics]::FromImage($bmp)
     $gfx.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $gfx.Clear([System.Drawing.Color]::Transparent)
@@ -241,7 +246,7 @@ function New-DotsIcon {
     for ($i = 0; $i -lt $HexColors.Count; $i++) {
         $color = [System.Drawing.ColorTranslator]::FromHtml($HexColors[$i])
         $brush = New-Object System.Drawing.SolidBrush -ArgumentList $color
-        $gfx.FillEllipse($brush, (2 + $i * 10), 12, 8, 8)
+        $gfx.FillEllipse($brush, (2 + $i * 10), 12, 8, 8)  # pastilles de 8 px, pas de 10
         $brush.Dispose()
     }
     $gfx.Dispose()
@@ -258,7 +263,7 @@ function New-DotsIcon {
 # ---------------------------------------------------------------- interface
 $notify = New-Object System.Windows.Forms.NotifyIcon
 $notify.Visible = $true
-$notify.Icon = New-DotsIcon @('#6B7280', '#6B7280', '#6B7280')
+$notify.Icon = New-DotsIcon @('#6B7280', '#6B7280', '#6B7280', '#6B7280')
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $notify.ContextMenuStrip = $menu

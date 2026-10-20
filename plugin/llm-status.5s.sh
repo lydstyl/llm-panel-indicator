@@ -6,7 +6,7 @@ Panneau COSMIC : une pastille par machine, toujours visible, avec la couleur de 
     🟠 orange  une partie des slots tourne, au moins un slot encore libre (ex. Marie 1/2)
     🔴 rouge   tous les slots tournent (machine saturée)
     ⚫ gris    serveur arrêté ou PC hors ligne
-Le rendu est un SVG unique (cbar n'accepte qu'une image par ligne) : lettres G / M / L en
+Le rendu est un SVG unique (cbar n'accepte qu'une image par ligne) : lettres G / M / L / S en
 blanc sur pastille colorée — la couleur ne dépend donc pas du thème clair/sombre.
 
 Source de vérité des slots : l'API HTTP de chaque llama-server (/slots) — jamais une valeur
@@ -60,6 +60,7 @@ DEFAULT_NODES = [
     {"id": "224", "letter": "G", "label": "Gabriel .224", "ip": "192.168.3.224", "card": None},
     {"id": "marie", "letter": "M", "label": "Marie .57", "ip": "192.168.3.57", "card": "marie"},
     {"id": "louis", "letter": "L", "label": "Louis .206", "ip": "192.168.3.206", "card": "louis"},
+    {"id": "skillorp", "letter": "S", "label": "SkillORP .249", "ip": "192.168.3.249", "card": "boncoin"},
 ]
 
 _working = {}  # mémorise la cible qui répond (évite les timeouts à répétition)
@@ -218,7 +219,7 @@ LEVEL_DOT = {"free": "🟢", "partial": "🟠", "busy": "🔴", "off": "⚫"}
 
 
 def panel_svg(nodes):
-    """Un seul SVG (cbar n'accepte qu'une image par ligne) : les pastilles G / M / L."""
+    """Un seul SVG (cbar n'accepte qu'une image par ligne) : les pastilles G / M / L / S."""
     radius, gap, pad, height = 10.5, 6.0, 0.5, 22.0
     diameter = 2 * radius + 2 * pad
     step = diameter + gap

@@ -7,7 +7,7 @@ Le panneau affiche **une pastille par machine**, toujours visible, colorée selo
 (clic gauche) détaille nœud par nœud : occupation, modèle chargé, file de prompts, liens.
 
 ```
-  ⬤ ⬤ ⬤        pastilles G (Gabriel .224) · M (Marie .57) · L (Louis .206)
+  ⬤ ⬤ ⬤ ⬤      pastilles G (Gabriel .224) · M (Marie .57) · L (Louis .206) · S (SkillORP .249)
 
   🟢 vert    aucune tâche en cours — machine disponible
   🟠 orange  une partie des slots tourne, au moins un slot encore libre (ex. Marie 1/2)
@@ -80,19 +80,21 @@ de `install.sh`.
 
 ## Configuration
 
-**Nœuds surveillés** — par défaut `.224` (dual-boot Windows/Pop), `Louis .206`, `Marie .57`.
+**Nœuds surveillés** — par défaut `.224` (dual-boot Windows/Pop), `Marie .57`, `Louis .206`, `SkillORP .249`
+(dans cet ordre : pastilles **G, M, L, S**).
 Surcharge via `~/.config/cbar/env` :
 
 ```bash
 # une seule ligne par variable (le JSON doit tenir sur une ligne)
-LLM_NODES_JSON='[{"id":"224","letter":"G","label":"Gabriel .224","ip":"192.168.3.224","card":null},{"id":"marie","letter":"M","label":"Marie .57","ip":"192.168.3.57","card":"marie"},{"id":"louis","letter":"L","label":"Louis .206","ip":"192.168.3.206","card":"louis"}]'
+LLM_NODES_JSON='[{"id":"224","letter":"G","label":"Gabriel .224","ip":"192.168.3.224","card":null},{"id":"marie","letter":"M","label":"Marie .57","ip":"192.168.3.57","card":"marie"},{"id":"louis","letter":"L","label":"Louis .206","ip":"192.168.3.206","card":"louis"},{"id":"skillorp","letter":"S","label":"SkillORP .249","ip":"192.168.3.249","card":"boncoin"}]'
 LLM_DASH_URL="http://dashboard.lan"
 LLM_QUEUE_URL="http://prompts.gab.lan"
 LLM_HTTP_TIMEOUT="2.5"
 ```
 
 `letter` = lettre affichée dans la pastille du panneau ; `card` = nom de la carte du dashboard
-(`/api/pc-<card>`), `null` pour un nœud Windows/Strata (via `/api/llm-224`). Le nœud `.224` est
+(`/api/pc-<card>` — `boncoin` pour SkillORP, ancien nom de la carte), `null` pour un nœud
+Windows/Strata (via `/api/llm-224`). Le nœud `.224` est
 compté **une seule fois**, que la machine ait booté Windows ou Pop OS.
 
 ## Installation (Windows) — zone de notification
@@ -117,9 +119,9 @@ L'installeur dépose deux fichiers dans `%USERPROFILE%\llm-tray\`, place un lanc
 **Démarrage** (démarrage automatique au logon, **sans droits administrateur ni tâche planifiée**),
 démarre l'indicateur et rappelle comment épingler l'icône.
 
-- **Icône** : trois pastilles **G / M / L**, même sémantique et mêmes couleurs que le panneau COSMIC
+- **Icône** : une pastille par machine en ligne (**G / M / L / S**), même sémantique et mêmes couleurs que le panneau COSMIC
   (vert libre · orange partiel · rouge saturé · gris arrêté/hors ligne).
-- **Survol** : état compact par machine (`G 0/1 · M 1/2 · L off`) — limité à 63 caractères par Windows.
+- **Survol** : état compact par machine (`G 0/1 · M 1/2 · L off · S 1/1`) — limité à 63 caractères par Windows.
 - **Clic gauche** : ouvre `dashboard.lan`. **Clic droit** : état détaillé par nœud (occupation, modèle,
   file de prompts), liens, rafraîchir, quitter.
 - **Zéro dépendance** : Windows PowerShell 5.1 + .NET Framework (`System.Windows.Forms` / `System.Drawing`).
