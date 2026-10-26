@@ -2,6 +2,7 @@
 
 Indicateur **temps réel de l'activité des LLM locaux** dans la barre système du panneau **COSMIC** (Pop!_OS 24.04)
 et dans la **zone de notification Windows** (voir la section Windows plus bas).
+Sur Android (Termux), le même indicateur vit dans la **barre de notifications** : voir [`android/`](android/).
 
 Le panneau affiche **une pastille par machine**, toujours visible, colorée selon son état ; le popup
 (clic gauche) détaille nœud par nœud : occupation, modèle chargé, file de prompts, liens.
