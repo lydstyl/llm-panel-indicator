@@ -39,7 +39,8 @@ param(
     [string]$DashboardHostHeader = 'dashboard.lan',
     [string]$QueueFallback = 'http://192.168.3.102:8108',
     [switch]$NoHud,
-    [int]$HudChip = 30
+    [int]$HudChip = 30,
+    [switch]$SelfTest      # interne : verifie le bandeau et le menu sans souris, puis quitte
 )
 
 $ErrorActionPreference = 'Continue'
@@ -372,9 +373,6 @@ $notify = New-Object System.Windows.Forms.NotifyIcon
 $notify.Visible = $true
 $notify.Icon = New-StatusIcon -Letters @($Script:Nodes | ForEach-Object { $_.Letter }) -HexColors @('#6B7280', '#6B7280', '#6B7280', '#6B7280')
 
-$menu = New-Object System.Windows.Forms.ContextMenuStrip
-$notify.ContextMenuStrip = $menu
-
 # HUD : fenêtre sans bordure, toujours au premier plan, 4 grosses lettres colorées.
 $hud = $null
 $hudBox = $null
@@ -402,9 +400,6 @@ if (-not $NoHud) {
     $hudBox.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::Normal
     $hudBox.BackColor = [System.Drawing.Color]::Transparent
     [void]$hud.Controls.Add($hudBox)
-    $hud.ContextMenuStrip = $menu
-    $hudBox.ContextMenuStrip = $menu
-
     $hudTip = New-Object System.Windows.Forms.ToolTip
     $hudTip.SetToolTip($hudBox, 'LLM locaux')
 
@@ -433,6 +428,77 @@ if (-not $NoHud) {
     }
 }
 
+# ---------------------------------------------------------------- menu (structure figée)
+# ⚠️ Ne JAMAIS vider/recréer les entrées à chaque cycle : le rafraîchissement passe toutes les 5 s et
+# un clic sur « Masquer le bandeau » tombait sur un ToolStripMenuItem détruit entre l'ouverture du menu
+# et le clic → le menu semblait ne rien faire (constaté par Gabriel, 10/2026). Ici la structure est
+# construite une seule fois au démarrage ; Update-MenuTexts ne change que les libellés.
+$menu = New-Object System.Windows.Forms.ContextMenuStrip
+
+$Script:MenuNodeItems = @()
+foreach ($n in $Script:Nodes) {
+    $item = New-Object System.Windows.Forms.ToolStripMenuItem
+    $item.Text = $n.Letter
+    $item.Enabled = $false
+    [void]$menu.Items.Add($item)
+    $Script:MenuNodeItems += $item
+}
+
+$Script:MenuSummary = New-Object System.Windows.Forms.ToolStripMenuItem
+$Script:MenuSummary.Enabled = $false
+[void]$menu.Items.Add($Script:MenuSummary)
+
+$Script:MenuQueue = New-Object System.Windows.Forms.ToolStripMenuItem
+$Script:MenuQueue.Enabled = $false
+[void]$menu.Items.Add($Script:MenuQueue)
+
+[void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+
+$Script:MenuDashboard = New-Object System.Windows.Forms.ToolStripMenuItem
+$Script:MenuDashboard.Text = 'Ouvrir le dashboard'
+$Script:MenuDashboard.Add_Click({ Start-Process $DashboardUrl })
+[void]$menu.Items.Add($Script:MenuDashboard)
+
+$Script:MenuQueueOpen = New-Object System.Windows.Forms.ToolStripMenuItem
+$Script:MenuQueueOpen.Text = 'Ouvrir la file de prompts'
+$Script:MenuQueueOpen.Add_Click({ Start-Process $QueueUrl })
+[void]$menu.Items.Add($Script:MenuQueueOpen)
+
+$Script:MenuRefresh = New-Object System.Windows.Forms.ToolStripMenuItem
+$Script:MenuRefresh.Text = 'Rafraîchir'
+$Script:MenuRefresh.Add_Click({ Update-Interface })
+[void]$menu.Items.Add($Script:MenuRefresh)
+
+$Script:MenuToggle = New-Object System.Windows.Forms.ToolStripMenuItem
+$Script:MenuToggle.Text = 'Masquer le bandeau de lettres'
+$Script:MenuToggle.Add_Click({
+        if ($hud) {
+            $hud.Visible = -not $hud.Visible
+            if ($hud.Visible) {
+                $Script:MenuToggle.Text = 'Masquer le bandeau de lettres'
+            } else {
+                $Script:MenuToggle.Text = 'Afficher le bandeau de lettres'
+            }
+        }
+    })
+[void]$menu.Items.Add($Script:MenuToggle)
+
+[void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+
+$Script:MenuQuit = New-Object System.Windows.Forms.ToolStripMenuItem
+$Script:MenuQuit.Text = 'Quitter'
+$Script:MenuQuit.Add_Click({
+        $notify.Visible = $false
+        [System.Windows.Forms.Application]::Exit()
+    })
+[void]$menu.Items.Add($Script:MenuQuit)
+
+$notify.ContextMenuStrip = $menu
+if ($hud) {
+    $hud.ContextMenuStrip = $menu
+    $hudBox.ContextMenuStrip = $menu
+}
+
 function Save-HudPosition {
     if (-not $hud) { return }
     try {
@@ -451,11 +517,11 @@ function Set-Tooltip {
     if ($hudTip) { $hudTip.SetToolTip($hudBox, $Text) }
 }
 
-function Update-Menu {
+function Update-MenuTexts {
     param($Nodes, [int]$QRun, [int]$QWait, [bool]$QueueOk)
 
-    $menu.Items.Clear()
-    foreach ($n in $Nodes) {
+    for ($i = 0; $i -lt $Nodes.Count -and $i -lt $Script:MenuNodeItems.Count; $i++) {
+        $n = $Nodes[$i]
         $label = '{0} · {1} — {2}' -f $n.Letter, $n.Label, $Script:LevelText[$n.Level]
         if ($n.Level -ne 'off') {
             $model = $n.Model
@@ -463,10 +529,7 @@ function Update-Menu {
             if ($model.Length -gt 34) { $model = $model.Substring(0, 31) + '…' }
             $label += (' · {0}/{1} · {2}' -f $n.Active, $n.Slots, $model)
         }
-        $item = New-Object System.Windows.Forms.ToolStripMenuItem
-        $item.Text = $label
-        $item.Enabled = $false
-        [void]$menu.Items.Add($item)
+        $Script:MenuNodeItems[$i].Text = $label
     }
 
     $online = 0
@@ -483,10 +546,7 @@ function Update-Menu {
     if ($online -gt 0) {
         $summaryText = '{0} tâche(s) en cours · {1} slot(s) sur {2} serveur(s)' -f $active, $capacity, $online
     }
-    $summary = New-Object System.Windows.Forms.ToolStripMenuItem
-    $summary.Text = $summaryText
-    $summary.Enabled = $false
-    [void]$menu.Items.Add($summary)
+    $Script:MenuSummary.Text = $summaryText
 
     $qLabel = 'File de prompts : injoignable'
     if ($QueueOk) {
@@ -496,50 +556,12 @@ function Update-Menu {
             $qLabel = 'File de prompts : vide'
         }
     }
-    $qItem = New-Object System.Windows.Forms.ToolStripMenuItem
-    $qItem.Text = $qLabel
-    $qItem.Enabled = $false
-    [void]$menu.Items.Add($qItem)
-
-    [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-
-    $openDash = New-Object System.Windows.Forms.ToolStripMenuItem
-    $openDash.Text = 'Ouvrir le dashboard'
-    $openDash.Add_Click({ Start-Process $DashboardUrl })
-    [void]$menu.Items.Add($openDash)
-
-    $openQueue = New-Object System.Windows.Forms.ToolStripMenuItem
-    $openQueue.Text = 'Ouvrir la file de prompts'
-    $openQueue.Add_Click({ Start-Process $QueueUrl })
-    [void]$menu.Items.Add($openQueue)
-
-    $refresh = New-Object System.Windows.Forms.ToolStripMenuItem
-    $refresh.Text = 'Rafraîchir'
-    $refresh.Add_Click({ Update-Interface })
-    [void]$menu.Items.Add($refresh)
-
-    if ($hud) {
-        $toggleHud = New-Object System.Windows.Forms.ToolStripMenuItem
-        $toggleHud.Text = 'Masquer le bandeau de lettres'
-        $toggleHud.Add_Click({
-                $hud.Visible = -not $hud.Visible
-            })
-        [void]$menu.Items.Add($toggleHud)
-    }
-
-    [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-
-    $quit = New-Object System.Windows.Forms.ToolStripMenuItem
-    $quit.Text = 'Quitter'
-    $quit.Add_Click({
-            $notify.Visible = $false
-            [System.Windows.Forms.Application]::Exit()
-        })
-    [void]$menu.Items.Add($quit)
+    $Script:MenuQueue.Text = $qLabel
 }
 
 function Update-Interface {
-    if ($Script:Refreshing) { return }
+    # ne rien rafraîchir pendant qu'un menu est ouvert (sinon le menu se referme sous le curseur)
+    if ($Script:Refreshing -or $menu.Visible) { return }
     $Script:Refreshing = $true
     try {
         $nodes = @()
@@ -578,7 +600,7 @@ function Update-Interface {
             if ($queue.counts.in_progress) { $qRun = [int]$queue.counts.in_progress }
             if ($queue.counts.pending) { $qWait = [int]$queue.counts.pending }
         }
-        Update-Menu -Nodes $nodes -QRun $qRun -QWait $qWait -QueueOk ($null -ne $queue)
+        Update-MenuTexts -Nodes $nodes -QRun $qRun -QWait $qWait -QueueOk ($null -ne $queue)
     } catch {
         Set-Tooltip ('LLM locaux — erreur : ' + $_.Exception.Message)
     } finally {
@@ -633,6 +655,36 @@ $timer.Add_Tick({ Update-Interface })
 $timer.Start()
 
 Update-Interface
+
+if ($SelfTest) {
+    # Verifie sans souris : bandeau visible, bascule masquer/afficher effective, menu non reconstruit.
+    $i = $Script:Nodes.Count          # index du resume dans le menu
+    $visible0 = $false
+    if ($hud) { $visible0 = $hud.Visible }
+    $count0 = $menu.Items.Count
+    $ref0 = [object]::ReferenceEquals($Script:MenuSummary, $menu.Items[$i])
+    Update-Interface
+    $ref1 = [object]::ReferenceEquals($Script:MenuSummary, $menu.Items[$i])
+    $Script:MenuToggle.PerformClick()
+    Start-Sleep -Milliseconds 300
+    $hidden = $false
+    if ($hud) { $hidden = -not $hud.Visible }
+    $labelHidden = $Script:MenuToggle.Text
+    $Script:MenuToggle.PerformClick()
+    Start-Sleep -Milliseconds 300
+    $shown = $false
+    if ($hud) { $shown = $hud.Visible }
+    'selftest bandeau_au_demarrage=' + $visible0 + ' masque=' + $hidden + ' reaffiche=' + $shown +
+        ' libelle_masque=' + $labelHidden + ' items=' + $count0 + '->' + $menu.Items.Count +
+        ' meme_objet=' + ($ref0 -and $ref1)
+    $ok = $visible0 -and $hidden -and $shown -and $ref0 -and $ref1 -and ($menu.Items.Count -eq $count0)
+    $notify.Visible = $false
+    $notify.Dispose()
+    if ($hud) { $hud.Dispose() }
+    if ($ok) { exit 0 }
+    exit 1
+}
+
 [System.Windows.Forms.Application]::Run()
 
 $timer.Stop()

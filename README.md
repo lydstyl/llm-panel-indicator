@@ -147,6 +147,13 @@ Linux, coupé à la section interface, contre les vraies APIs du LAN :
 windows/tests/run-core-tests.sh   # syntaxe + 10 contrôles (niveaux, cohérence, repli IP, géométrie des pastilles)
 ```
 
+Et sur la machine, sans souris (`-SelfTest` : le bandeau s'affiche, la bascule masquer/afficher fonctionne,
+le menu n'est pas reconstruit) :
+
+```powershell
+powershell -NoProfile -File "$env:USERPROFILE\llm-tray\llm-tray.ps1" -SelfTest   # code de sortie 0 = OK
+```
+
 Notes techniques :
 
 - ⚠️ **ENCODAGE — la panne n° 1, invisible :** PowerShell **5.1 lit un `.ps1` sans BOM comme de l'ANSI
@@ -164,6 +171,11 @@ Notes techniques :
 - ⚠️ `NotifyIcon.Text` est limité à **63 caractères** (au-delà : exception) → troncature systématique.
 - `GetHicon()` doit être suivi de `DestroyIcon` (P/Invoke) sinon **fuite de handles GDI** à chaque
   rafraîchissement (toutes les 5 s).
+- ⚠️ **Ne jamais vider/recréer les entrées du menu contextuel à chaque cycle** : le menu est rafraîchi
+  toutes les 5 s et un clic sur « Masquer le bandeau » tombait sur un `ToolStripMenuItem` déjà détruit
+  → le menu semblait ne rien faire. La structure est construite **une fois** au démarrage
+  (`$Script:MenuNodeItems`, `$Script:MenuToggle`…), `Update-MenuTexts` ne change que les libellés, et
+  le rafraîchissement est suspendu tant que `$menu.Visible` est vrai.
 - La **géométrie** des pastilles (`Get-ChipGrid`, `Get-ChipRow`, `Get-RowSize`) est extraite en
   fonctions pures, sans `System.Drawing` : elle est donc testable depuis Linux, et un test vérifie
   explicitement que la grille 2x2 double la taille des pastilles par rapport à une rangée de 4.
