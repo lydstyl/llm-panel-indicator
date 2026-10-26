@@ -93,11 +93,47 @@ Test-Case 'un noeud joignable avec slots > 0 n''est jamais « off »' {
     foreach ($s in Get-States) { if ($s.Slots -gt 0 -and $s.Level -eq 'off') { return $false } }
     return $true
 }
-Test-Case 'l''icone expose 3 couleurs valides' {
+Test-Case 'l''icone expose une couleur valide par noeud' {
     $colors = @()
     foreach ($s in Get-States) { $colors += $Script:LevelColor[$s.Level] }
-    if ($colors.Count -ne 3) { return $false }
+    if ($colors.Count -ne $Script:Nodes.Count) { return $false }
     foreach ($c in $colors) { if ($c -notmatch '^#[0-9A-Fa-f]{6}$') { return $false } }
+    return $true
+}
+Test-Case 'grille d''icone : une pastille par noeud, carree, dans les bornes 32x32' {
+    $letters = @($Script:Nodes | ForEach-Object { $_.Letter })
+    $colors = @()
+    foreach ($s in Get-States) { $colors += $Script:LevelColor[$s.Level] }
+    $chips = Get-ChipGrid -Letters $letters -HexColors $colors -Size $Script:IconPx -Cols 2
+    if ($chips.Count -ne $letters.Count) { return $false }
+    foreach ($c in $chips) {
+        if ($c.X -lt 0 -or $c.Y -lt 0) { return $false }
+        if ($c.Width -lt 4 -or $c.Height -lt 4) { return $false }
+        if (($c.X + $c.Width) -gt $Script:IconPx -or ($c.Y + $c.Height) -gt $Script:IconPx) { return $false }
+    }
+    # 2 colonnes : les deux premieres pastilles partagent la meme ordonnee, les deux suivantes aussi
+    if ($chips[0].Y -ne $chips[1].Y) { return $false }
+    if ($chips[0].X -eq $chips[1].X) { return $false }
+    return $true
+}
+Test-Case 'grille d''icone : 2x2 plus grande qu''une rangee de 4 (raison du carre)' {
+    # une rangee de 4 dans une image 32x32 carree ne laisse que 8 px par pastille ; la grille 2x2 en laisse 16
+    $letters = @($Script:Nodes | ForEach-Object { $_.Letter })
+    $colors = @()
+    foreach ($s in Get-States) { $colors += $Script:LevelColor[$s.Level] }
+    $grid = Get-ChipGrid -Letters $letters -HexColors $colors -Size $Script:IconPx -Cols 2
+    $row = Get-ChipGrid -Letters $letters -HexColors $colors -Size $Script:IconPx -Cols 4
+    return ($grid[0].Width -ge ($row[0].Width * 2) - 2)
+}
+Test-Case 'HUD : rangee de 4 pastilles de 30 px = 138x36' {
+    $letters = @($Script:Nodes | ForEach-Object { $_.Letter })
+    $colors = @()
+    foreach ($s in Get-States) { $colors += $Script:LevelColor[$s.Level] }
+    $chips = Get-ChipRow -Letters $letters -HexColors $colors -Chip 30 -Gap 4 -Pad 3
+    $size = Get-RowSize -Count $letters.Count -Chip 30 -Gap 4 -Pad 3
+    if ($chips.Count -ne 4) { return $false }
+    if ($size.Width -ne 138 -or $size.Height -ne 36) { return $false }
+    if (($chips[3].X + $chips[3].Width) -gt $size.Width) { return $false }
     return $true
 }
 Test-Case 'le texte de survol tient dans les 63 caracteres imposes par Windows' {

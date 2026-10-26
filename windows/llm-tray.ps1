@@ -1,17 +1,23 @@
 ﻿<#
-    llm-tray.ps1 — indicateur « LLM locaux » dans la zone de notification Windows.
+    llm-tray.ps1 — indicateur « LLM locaux » sous Windows.
 
-    Windows 11 n'autorise plus les greffons dans la barre des tâches (l'API DeskBand est morte) :
-    l'équivalent le plus proche est une ICÔNE DE ZONE DE NOTIFICATION, à épingler pour qu'elle
-    reste visible en permanence (Paramètres → Personnalisation → Barre des tâches → Autres icônes
-    système, ou glisser l'icône depuis le tiroir « ^ »).
+    Deux affichages, même sémantique de couleurs :
+      1. ICÔNE DE ZONE DE NOTIFICATION — 4 pastilles carrées portant les lettres G / M / L / S,
+         disposées en grille 2x2 (carré : Windows réduit l'icône à 16x16 en conservant le ratio,
+         donc une image large gaspille la place et rend les pastilles minuscules).
+      2. HUD — petite fenêtre sans bordure, toujours au premier plan, 4 grosses lettres colorées
+         (30 px par défaut, soit ~4x la taille des pastilles d'origine), déplaçable à la souris :
+         elle mémorise sa position dans %USERPROFILE%\llm-tray\hud-pos.json.
+         Désactivable avec -NoHud.
 
-    Même sémantique que l'applet COSMIC : trois pastilles G / M / L dans l'icône
         vert    aucune tâche en cours
         orange  une partie des slots tourne, au moins un slot libre (ex. Marie 1/2)
         rouge   tous les slots tournent (saturé)
         gris    serveur arrêté ou PC hors ligne
-    Survol = état par machine · clic gauche = dashboard · clic droit = menu détaillé.
+
+    Survol de l'icône = état par machine · clic gauche = dashboard · clic droit = menu détaillé.
+    Windows 11 n'autorise plus les greffons dans la barre des tâches (API DeskBand morte) : l'icône
+    de zone de notification doit être épinglée pour rester visible en permanence.
 
     Zéro dépendance : Windows PowerShell 5.1 + .NET Framework (System.Windows.Forms / System.Drawing).
     Lancement au logon : windows/llm-tray.vbs (voir install-windows.ps1).
@@ -31,7 +37,9 @@ param(
     [string]$QueueUrl = 'http://prompts.gab.lan/',
     [string]$DashboardFallback = 'http://192.168.3.102',
     [string]$DashboardHostHeader = 'dashboard.lan',
-    [string]$QueueFallback = 'http://192.168.3.102:8108'
+    [string]$QueueFallback = 'http://192.168.3.102:8108',
+    [switch]$NoHud,
+    [int]$HudChip = 30
 )
 
 $ErrorActionPreference = 'Continue'
@@ -60,6 +68,11 @@ $Script:QueueTargets = @(
 )
 $Script:Working = @{}          # dernière cible qui a répondu, par type d'appel
 $Script:DefaultPort = 8080
+
+# Taille de l'image d'icône livrée à Windows. Windows la réduit à SM_CXSMICON (16 px en 100 %),
+# mais fournir 32 px garde le rendu net aux échelles 150-200 %.
+$Script:IconPx = 32
+$Script:HudPath = Join-Path $PSScriptRoot 'hud-pos.json'
 
 $Script:Nodes = @(
     [pscustomobject]@{ Id = '224';   Letter = 'G'; Label = 'Gabriel .224'; Ip = '192.168.3.224'; Card = $null },
@@ -230,25 +243,108 @@ function Get-NodeState {
     return $state
 }
 
-# ---------------------------------------------------------------- icône (3 pastilles)
-function New-DotsIcon {
-    param([string[]]$HexColors)
+# ---------------------------------------------------------------- géométrie des pastilles
+# Fonctions pures (aucun System.Drawing) : testables depuis Linux, cf. windows/tests.
 
-    # Largeur adaptée au nombre de pastilles : 4 machines = 42 px, jamais de débordement.
-    $count = $HexColors.Count
-    if ($count -lt 1) { $count = 1 }
-    $width = [math]::Max(32, 2 + $count * 10)
-    $bmp = New-Object System.Drawing.Bitmap $width, 32
-    $gfx = [System.Drawing.Graphics]::FromImage($bmp)
-    $gfx.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-    $gfx.Clear([System.Drawing.Color]::Transparent)
+# Grille carrée 2x2 pour l'icône : Windows réduit l'image à 16x16 en gardant le ratio, donc une
+# image carrée donne des pastilles 2x plus grandes qu'une rangée de 4.
+function Get-ChipGrid {
+    param([string[]]$Letters, [string[]]$HexColors, [int]$Size = 32, [int]$Cols = 2)
 
-    for ($i = 0; $i -lt $HexColors.Count; $i++) {
-        $color = [System.Drawing.ColorTranslator]::FromHtml($HexColors[$i])
-        $brush = New-Object System.Drawing.SolidBrush -ArgumentList $color
-        $gfx.FillEllipse($brush, (2 + $i * 10), 12, 8, 8)  # pastilles de 8 px, pas de 10
-        $brush.Dispose()
+    $out = @()
+    $count = $Letters.Count
+    if ($count -lt 1) { return $out }
+    if ($Cols -lt 1) { $Cols = 1 }
+    if ($Cols -gt $count) { $Cols = $count }
+    $rows = [int][math]::Ceiling($count / [double]$Cols)
+    $cell = [int][math]::Floor($Size / [math]::Max($Cols, $rows))
+    if ($cell -lt 1) { $cell = 1 }
+
+    for ($i = 0; $i -lt $count; $i++) {
+        $col = $i % $Cols
+        $row = [int][math]::Floor($i / $Cols)
+        # 1 px d'écart entre pastilles (sauf dernière colonne/ligne) pour rester lisible à 16 px
+        $w = $cell
+        if ($col -lt ($Cols - 1)) { $w = $cell - 1 }
+        $h = $cell
+        if ($row -lt ($rows - 1)) { $h = $cell - 1 }
+        $out += [pscustomobject]@{
+            Letter = [string]$Letters[$i]
+            Color  = [string]$HexColors[$i]
+            X      = $col * $cell
+            Y      = $row * $cell
+            Width  = $w
+            Height = $h
+        }
     }
+    return $out
+}
+
+# Rangée horizontale pour le HUD : chaque pastille a la largeur demandée (30 px par défaut).
+function Get-ChipRow {
+    param([string[]]$Letters, [string[]]$HexColors, [int]$Chip = 30, [int]$Gap = 4, [int]$Pad = 3)
+
+    $out = @()
+    for ($i = 0; $i -lt $Letters.Count; $i++) {
+        $out += [pscustomobject]@{
+            Letter = [string]$Letters[$i]
+            Color  = [string]$HexColors[$i]
+            X      = $Pad + $i * ($Chip + $Gap)
+            Y      = $Pad
+            Width  = $Chip
+            Height = $Chip
+        }
+    }
+    return $out
+}
+
+function Get-RowSize {
+    param([int]$Count, [int]$Chip = 30, [int]$Gap = 4, [int]$Pad = 3)
+    if ($Count -lt 1) { $Count = 1 }
+    return [pscustomobject]@{
+        Width  = 2 * $Pad + $Count * $Chip + ($Count - 1) * $Gap
+        Height = 2 * $Pad + $Chip
+    }
+}
+
+# ---------------------------------------------------------------- rendu
+function Draw-Chips {
+    param([System.Drawing.Graphics]$Gfx, $Chips)
+
+    $Gfx.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $Gfx.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+    $Gfx.Clear([System.Drawing.Color]::Transparent)
+
+    $fmt = New-Object System.Drawing.StringFormat
+    $fmt.Alignment = [System.Drawing.StringAlignment]::Center
+    $fmt.LineAlignment = [System.Drawing.StringAlignment]::Center
+
+    foreach ($c in $Chips) {
+        $color = [System.Drawing.ColorTranslator]::FromHtml($c.Color)
+        $chipBrush = New-Object System.Drawing.SolidBrush -ArgumentList $color
+        $rect = New-Object System.Drawing.RectangleF -ArgumentList ([float]$c.X), ([float]$c.Y), ([float]$c.Width), ([float]$c.Height)
+        $Gfx.FillRectangle($chipBrush, $rect)
+        $chipBrush.Dispose()
+
+        # lettre blanche : lisible sur les 4 couleurs, en thème clair comme sombre
+        $px = [float]([math]::Floor([math]::Min($c.Width, $c.Height) * 0.68))
+        if ($px -lt 5) { $px = 5 }
+        $font = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', $px, ([System.Drawing.FontStyle]::Bold), ([System.Drawing.GraphicsUnit]::Pixel)
+        $textBrush = New-Object System.Drawing.SolidBrush -ArgumentList ([System.Drawing.Color]::White)
+        $Gfx.DrawString($c.Letter, $font, $textBrush, $rect, $fmt)
+        $textBrush.Dispose()
+        $font.Dispose()
+    }
+    $fmt.Dispose()
+}
+
+function New-StatusIcon {
+    param([string[]]$Letters, [string[]]$HexColors)
+
+    $px = $Script:IconPx
+    $bmp = New-Object System.Drawing.Bitmap -ArgumentList $px, $px
+    $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+    Draw-Chips -Gfx $gfx -Chips (Get-ChipGrid -Letters $Letters -HexColors $HexColors -Size $px -Cols 2)
     $gfx.Dispose()
 
     $handle = $bmp.GetHicon()
@@ -260,13 +356,90 @@ function New-DotsIcon {
     return $copy
 }
 
+function New-HudBitmap {
+    param([string[]]$Letters, [string[]]$HexColors, [int]$Chip = 30)
+
+    $size = Get-RowSize -Count $Letters.Count -Chip $Chip
+    $bmp = New-Object System.Drawing.Bitmap -ArgumentList $size.Width, $size.Height
+    $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+    Draw-Chips -Gfx $gfx -Chips (Get-ChipRow -Letters $Letters -HexColors $HexColors -Chip $Chip)
+    $gfx.Dispose()
+    return $bmp
+}
+
 # ---------------------------------------------------------------- interface
 $notify = New-Object System.Windows.Forms.NotifyIcon
 $notify.Visible = $true
-$notify.Icon = New-DotsIcon @('#6B7280', '#6B7280', '#6B7280', '#6B7280')
+$notify.Icon = New-StatusIcon -Letters @($Script:Nodes | ForEach-Object { $_.Letter }) -HexColors @('#6B7280', '#6B7280', '#6B7280', '#6B7280')
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $notify.ContextMenuStrip = $menu
+
+# HUD : fenêtre sans bordure, toujours au premier plan, 4 grosses lettres colorées.
+$hud = $null
+$hudBox = $null
+$hudTip = $null
+$Script:HudW = 0
+$Script:HudH = 0
+if (-not $NoHud) {
+    $letters0 = @($Script:Nodes | ForEach-Object { $_.Letter })
+    $size0 = Get-RowSize -Count $letters0.Count -Chip $HudChip
+    $Script:HudW = $size0.Width
+    $Script:HudH = $size0.Height
+
+    $hud = New-Object System.Windows.Forms.Form
+    $hud.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+    $hud.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
+    $hud.TopMost = $true
+    $hud.ShowInTaskbar = $false
+    $hud.Text = 'LLM locaux'
+    $hud.BackColor = [System.Drawing.Color]::FromArgb(18, 18, 20)
+    $hud.ClientSize = New-Object System.Drawing.Size -ArgumentList $Script:HudW, $Script:HudH
+
+    $hudBox = New-Object System.Windows.Forms.PictureBox
+    $hudBox.Location = New-Object System.Drawing.Point -ArgumentList 0, 0
+    $hudBox.Size = New-Object System.Drawing.Size -ArgumentList $Script:HudW, $Script:HudH
+    $hudBox.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::Normal
+    $hudBox.BackColor = [System.Drawing.Color]::Transparent
+    [void]$hud.Controls.Add($hudBox)
+    $hud.ContextMenuStrip = $menu
+    $hudBox.ContextMenuStrip = $menu
+
+    $hudTip = New-Object System.Windows.Forms.ToolTip
+    $hudTip.SetToolTip($hudBox, 'LLM locaux')
+
+    # position : celle mémorisée, sinon coin bas-droit de la zone de travail (juste au-dessus de
+    # la barre des tâches, donc près de l'horloge sans rien masquer)
+    $placed = $false
+    if (Test-Path $Script:HudPath) {
+        try {
+            $saved = Get-Content -Path $Script:HudPath -Raw | ConvertFrom-Json
+            $sx = 0
+            $sy = 0
+            if ([int]::TryParse([string]$saved.x, [ref]$sx) -and [int]::TryParse([string]$saved.y, [ref]$sy)) {
+                $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+                # ne restaurer que si la position est encore visible (écran débranché, résolution changée)
+                if ($sx -gt ($screen.Left - $Script:HudW + 40) -and $sx -lt $screen.Right -and
+                    $sy -gt ($screen.Top - $Script:HudH + 40) -and $sy -lt $screen.Bottom) {
+                    $hud.Location = New-Object System.Drawing.Point -ArgumentList $sx, $sy
+                    $placed = $true
+                }
+            }
+        } catch { }
+    }
+    if (-not $placed) {
+        $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        $hud.Location = New-Object System.Drawing.Point -ArgumentList ([int]($wa.Right - $Script:HudW - 12)), ([int]($wa.Bottom - $Script:HudH - 12))
+    }
+}
+
+function Save-HudPosition {
+    if (-not $hud) { return }
+    try {
+        $payload = '{"x":' + $hud.Left + ',"y":' + $hud.Top + '}'
+        [System.IO.File]::WriteAllText($Script:HudPath, $payload, (New-Object System.Text.UTF8Encoding $false))
+    } catch { }
+}
 
 $Script:Refreshing = $false
 
@@ -275,6 +448,94 @@ function Set-Tooltip {
     # NotifyIcon.Text est limité à 63 caractères : dépasser lève une exception.
     if ($Text.Length -gt 63) { $Text = $Text.Substring(0, 60) + '…' }
     $notify.Text = $Text
+    if ($hudTip) { $hudTip.SetToolTip($hudBox, $Text) }
+}
+
+function Update-Menu {
+    param($Nodes, [int]$QRun, [int]$QWait, [bool]$QueueOk)
+
+    $menu.Items.Clear()
+    foreach ($n in $Nodes) {
+        $label = '{0} · {1} — {2}' -f $n.Letter, $n.Label, $Script:LevelText[$n.Level]
+        if ($n.Level -ne 'off') {
+            $model = $n.Model
+            if (-not $model) { $model = '?' }
+            if ($model.Length -gt 34) { $model = $model.Substring(0, 31) + '…' }
+            $label += (' · {0}/{1} · {2}' -f $n.Active, $n.Slots, $model)
+        }
+        $item = New-Object System.Windows.Forms.ToolStripMenuItem
+        $item.Text = $label
+        $item.Enabled = $false
+        [void]$menu.Items.Add($item)
+    }
+
+    $online = 0
+    $active = 0
+    $capacity = 0
+    foreach ($n in $Nodes) {
+        if ($n.Level -ne 'off') {
+            $online++
+            $active += $n.Active
+            $capacity += $n.Slots
+        }
+    }
+    $summaryText = 'Aucun LLM local en ligne'
+    if ($online -gt 0) {
+        $summaryText = '{0} tâche(s) en cours · {1} slot(s) sur {2} serveur(s)' -f $active, $capacity, $online
+    }
+    $summary = New-Object System.Windows.Forms.ToolStripMenuItem
+    $summary.Text = $summaryText
+    $summary.Enabled = $false
+    [void]$menu.Items.Add($summary)
+
+    $qLabel = 'File de prompts : injoignable'
+    if ($QueueOk) {
+        if ($QRun -or $QWait) {
+            $qLabel = 'File : {0} en cours, {1} en attente' -f $QRun, $QWait
+        } else {
+            $qLabel = 'File de prompts : vide'
+        }
+    }
+    $qItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $qItem.Text = $qLabel
+    $qItem.Enabled = $false
+    [void]$menu.Items.Add($qItem)
+
+    [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+
+    $openDash = New-Object System.Windows.Forms.ToolStripMenuItem
+    $openDash.Text = 'Ouvrir le dashboard'
+    $openDash.Add_Click({ Start-Process $DashboardUrl })
+    [void]$menu.Items.Add($openDash)
+
+    $openQueue = New-Object System.Windows.Forms.ToolStripMenuItem
+    $openQueue.Text = 'Ouvrir la file de prompts'
+    $openQueue.Add_Click({ Start-Process $QueueUrl })
+    [void]$menu.Items.Add($openQueue)
+
+    $refresh = New-Object System.Windows.Forms.ToolStripMenuItem
+    $refresh.Text = 'Rafraîchir'
+    $refresh.Add_Click({ Update-Interface })
+    [void]$menu.Items.Add($refresh)
+
+    if ($hud) {
+        $toggleHud = New-Object System.Windows.Forms.ToolStripMenuItem
+        $toggleHud.Text = 'Masquer le bandeau de lettres'
+        $toggleHud.Add_Click({
+                $hud.Visible = -not $hud.Visible
+            })
+        [void]$menu.Items.Add($toggleHud)
+    }
+
+    [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+
+    $quit = New-Object System.Windows.Forms.ToolStripMenuItem
+    $quit.Text = 'Quitter'
+    $quit.Add_Click({
+            $notify.Visible = $false
+            [System.Windows.Forms.Application]::Exit()
+        })
+    [void]$menu.Items.Add($quit)
 }
 
 function Update-Interface {
@@ -285,26 +546,29 @@ function Update-Interface {
         foreach ($n in $Script:Nodes) { $nodes += Get-NodeState -Node $n }
 
         $colors = @()
+        $letters = @()
         $short = @()
-        $online = 0
-        $active = 0
-        $capacity = 0
         foreach ($n in $nodes) {
             $colors += $Script:LevelColor[$n.Level]
+            $letters += [string]$n.Letter
             if ($n.Level -eq 'off') {
                 $short += ('{0} off' -f $n.Letter)
             } else {
                 $short += ('{0} {1}/{2}' -f $n.Letter, $n.Active, $n.Slots)
-                $online++
-                $active += $n.Active
-                $capacity += $n.Slots
             }
         }
 
-        $newIcon = New-DotsIcon $colors
+        $newIcon = New-StatusIcon -Letters $letters -HexColors $colors
         $oldIcon = $notify.Icon
         $notify.Icon = $newIcon
         if ($oldIcon) { $oldIcon.Dispose() }
+
+        if ($hud) {
+            $newBmp = New-HudBitmap -Letters $letters -HexColors $colors -Chip $HudChip
+            $oldBmp = $hudBox.Image
+            $hudBox.Image = $newBmp
+            if ($oldBmp) { $oldBmp.Dispose() }
+        }
         Set-Tooltip ('LLM locaux · ' + ($short -join ' · '))
 
         $queue = Get-Json -Path '/api/stats' -Kind 'queue'
@@ -314,70 +578,7 @@ function Update-Interface {
             if ($queue.counts.in_progress) { $qRun = [int]$queue.counts.in_progress }
             if ($queue.counts.pending) { $qWait = [int]$queue.counts.pending }
         }
-
-        $menu.Items.Clear()
-        foreach ($n in $nodes) {
-            $label = '{0} · {1} — {2}' -f $n.Letter, $n.Label, $Script:LevelText[$n.Level]
-            if ($n.Level -ne 'off') {
-                $model = $n.Model
-                if (-not $model) { $model = '?' }
-                if ($model.Length -gt 34) { $model = $model.Substring(0, 31) + '…' }
-                $label += (' · {0}/{1} · {2}' -f $n.Active, $n.Slots, $model)
-            }
-            $item = New-Object System.Windows.Forms.ToolStripMenuItem
-            $item.Text = $label
-            $item.Enabled = $false
-            [void]$menu.Items.Add($item)
-        }
-
-        $summaryText = 'Aucun LLM local en ligne'
-        if ($online -gt 0) {
-            $summaryText = '{0} tâche(s) en cours · {1} slot(s) sur {2} serveur(s)' -f $active, $capacity, $online
-        }
-        $summary = New-Object System.Windows.Forms.ToolStripMenuItem
-        $summary.Text = $summaryText
-        $summary.Enabled = $false
-        [void]$menu.Items.Add($summary)
-
-        $qLabel = 'File de prompts : injoignable'
-        if ($queue) {
-            if ($qRun -or $qWait) {
-                $qLabel = 'File : {0} en cours, {1} en attente' -f $qRun, $qWait
-            } else {
-                $qLabel = 'File de prompts : vide'
-            }
-        }
-        $qItem = New-Object System.Windows.Forms.ToolStripMenuItem
-        $qItem.Text = $qLabel
-        $qItem.Enabled = $false
-        [void]$menu.Items.Add($qItem)
-
-        [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-
-        $openDash = New-Object System.Windows.Forms.ToolStripMenuItem
-        $openDash.Text = 'Ouvrir le dashboard'
-        $openDash.Add_Click({ Start-Process $DashboardUrl })
-        [void]$menu.Items.Add($openDash)
-
-        $openQueue = New-Object System.Windows.Forms.ToolStripMenuItem
-        $openQueue.Text = 'Ouvrir la file de prompts'
-        $openQueue.Add_Click({ Start-Process $QueueUrl })
-        [void]$menu.Items.Add($openQueue)
-
-        $refresh = New-Object System.Windows.Forms.ToolStripMenuItem
-        $refresh.Text = 'Rafraîchir'
-        $refresh.Add_Click({ Update-Interface })
-        [void]$menu.Items.Add($refresh)
-
-        [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-
-        $quit = New-Object System.Windows.Forms.ToolStripMenuItem
-        $quit.Text = 'Quitter'
-        $quit.Add_Click({
-                $notify.Visible = $false
-                [System.Windows.Forms.Application]::Exit()
-            })
-        [void]$menu.Items.Add($quit)
+        Update-Menu -Nodes $nodes -QRun $qRun -QWait $qWait -QueueOk ($null -ne $queue)
     } catch {
         Set-Tooltip ('LLM locaux — erreur : ' + $_.Exception.Message)
     } finally {
@@ -390,6 +591,42 @@ $notify.Add_MouseClick({
         if ($eventArgs.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Start-Process $DashboardUrl }
     })
 
+if ($hud) {
+    # déplacement à la souris (position mémorisée au relâchement) — la fenêtre n'a ni bordure ni
+    # barre de titre, donc tout le déplacement passe par le PictureBox
+    $Script:DragOn = $false
+    $Script:DragCursor = $null
+    $Script:DragOrigin = $null
+
+    $hudBox.Add_MouseDown({
+            param($sender, $eventArgs)
+            if ($eventArgs.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+                $Script:DragOn = $true
+                $Script:DragCursor = [System.Windows.Forms.Cursor]::Position
+                $Script:DragOrigin = $hud.Location
+            }
+        })
+    $hudBox.Add_MouseMove({
+            param($sender, $eventArgs)
+            if ($Script:DragOn) {
+                $p = [System.Windows.Forms.Cursor]::Position
+                $nx = $Script:DragOrigin.X + ($p.X - $Script:DragCursor.X)
+                $ny = $Script:DragOrigin.Y + ($p.Y - $Script:DragCursor.Y)
+                $hud.Location = New-Object System.Drawing.Point -ArgumentList $nx, $ny
+            }
+        })
+    $hudBox.Add_MouseUp({
+            param($sender, $eventArgs)
+            if ($Script:DragOn) {
+                $Script:DragOn = $false
+                Save-HudPosition
+            }
+        })
+    $hudBox.Add_DoubleClick({ Start-Process $DashboardUrl })
+
+    $hud.Show()
+}
+
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = [Math]::Max(2, $IntervalSec) * 1000
 $timer.Add_Tick({ Update-Interface })
@@ -401,3 +638,4 @@ Update-Interface
 $timer.Stop()
 $notify.Visible = $false
 $notify.Dispose()
+if ($hud) { $hud.Dispose() }
