@@ -118,7 +118,11 @@ Write-Host @"
       « llm-tray » (ou « Windows PowerShell »), ou
     · cliquer sur « ^ » et faire glisser l'icône à côté de l'horloge.
 
-  Icône : trois pastilles G / M / L — vert = libre, orange = partiel, rouge = saturé, gris = arrêté.
+  Affichage : 4 pastilles-lettres G / M / L / S — vert = libre, orange = partiel, rouge = saturé,
+  gris = arrêté.
+    · icône de zone de notification : grille 2x2 (Windows la réduit à 16x16)
+    · bandeau (HUD) : 4 grosses lettres de 30 px, toujours au premier plan, déplaçable à la souris
+      (position mémorisée), masquable par clic droit, ou désactivable : -NoHud
   Survol = état par machine · clic gauche = dashboard · clic droit = détail + quitter.
 
   Mise à jour : relancer ce script suffit — les fichiers sont réécrits ET l'instance en cours est
