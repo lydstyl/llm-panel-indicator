@@ -105,22 +105,33 @@ applet COSMIC est une **icône de zone de notification**, à épingler pour qu'e
 permanence.
 
 ```powershell
-irm https://raw.githubusercontent.com/lydstyl/llm-panel-indicator/main/windows/install-windows.ps1 | iex
+$s = irm "https://api.github.com/repos/lydstyl/llm-panel-indicator/contents/windows/install-windows.ps1?ref=main"; iex ($s.TrimStart([char]0xFEFF))
 ```
 
-Ou, si le dépôt vient d'être modifié (le CDN de `raw.githubusercontent` peut servir une version en
-cache pendant plusieurs minutes) :
+> ⚠️ Le `TrimStart([char]0xFEFF)` n'est pas décoratif : le `.ps1` commence par un **BOM UTF-8** et
+> `irm` le conserve dans la chaîne → `iex` (comme `[scriptblock]::Create`) échoue sur un
+> « Unexpected token » à la première ligne. Constaté sur Windows 11 / PowerShell 5.1 (10/2026).
 
-```powershell
-irm "https://api.github.com/repos/lydstyl/llm-panel-indicator/contents/windows/install-windows.ps1?ref=main" | iex
-```
+L'API GitHub est préférée à `raw.githubusercontent` quand le dépôt vient d'être modifié (le CDN de
+`raw` peut servir une version en cache pendant plusieurs minutes).
 
 L'installeur dépose deux fichiers dans `%USERPROFILE%\llm-tray\`, place un lanceur dans le dossier
 **Démarrage** (démarrage automatique au logon, **sans droits administrateur ni tâche planifiée**),
 démarre l'indicateur et rappelle comment épingler l'icône.
 
-- **Icône** : une pastille par machine en ligne (**G / M / L / S**), même sémantique et mêmes couleurs que le panneau COSMIC
-  (vert libre · orange partiel · rouge saturé · gris arrêté/hors ligne).
+Deux affichages, même sémantique de couleurs que le panneau COSMIC (vert libre · orange partiel ·
+rouge saturé · gris arrêté/hors ligne) :
+
+- **Icône de zone de notification** — 4 pastilles **G / M / L / S** en **grille 2x2**. Windows réduit
+  l'icône à `SM_CXSMICON` (16x16 en 100 %) **en conservant le ratio** : une rangée de 4 pastilles dans
+  une image large ne laisse que ~3 px par point (illisible), la grille carrée double la taille
+  disponible. À 16 px, les couleurs restent distinctes mais **4 lettres n'y tiennent pas**.
+- **Bandeau (HUD)** — la version lisible : fenêtre sans bordure, toujours au premier plan, **4 grosses
+  lettres** dans des carrés de 30 px (≈ 4 à 8x les pastilles d'origine), lettres blanches sur fond
+  coloré. Placée au coin bas-droit de la zone de travail (juste au-dessus de la barre des tâches).
+  · **déplaçable** à la souris, position mémorisée dans `%USERPROFILE%\llm-tray\hud-pos.json` ;
+  · **double-clic** = dashboard, **clic droit** = menu (dont « Masquer le bandeau de lettres ») ;
+  · taille réglable : `-HudChip 40` (ou `-NoHud` pour la désactiver).
 - **Survol** : état compact par machine (`G 0/1 · M 1/2 · L off · S 1/1`) — limité à 63 caractères par Windows.
 - **Clic gauche** : ouvre `dashboard.lan`. **Clic droit** : état détaillé par nœud (occupation, modèle,
   file de prompts), liens, rafraîchir, quitter.
@@ -133,7 +144,7 @@ console), `windows/install-windows.ps1` (installation).
 Linux, coupé à la section interface, contre les vraies APIs du LAN :
 
 ```bash
-windows/tests/run-core-tests.sh   # syntaxe + 7 contrôles d'intégrité (niveaux, cohérence, repli IP)
+windows/tests/run-core-tests.sh   # syntaxe + 10 contrôles (niveaux, cohérence, repli IP, géométrie des pastilles)
 ```
 
 Notes techniques :
@@ -153,9 +164,13 @@ Notes techniques :
 - ⚠️ `NotifyIcon.Text` est limité à **63 caractères** (au-delà : exception) → troncature systématique.
 - `GetHicon()` doit être suivi de `DestroyIcon` (P/Invoke) sinon **fuite de handles GDI** à chaque
   rafraîchissement (toutes les 5 s).
+- La **géométrie** des pastilles (`Get-ChipGrid`, `Get-ChipRow`, `Get-RowSize`) est extraite en
+  fonctions pures, sans `System.Drawing` : elle est donc testable depuis Linux, et un test vérifie
+  explicitement que la grille 2x2 double la taille des pastilles par rapport à une rangée de 4.
 - Pour un affichage **dans** la barre des tâches Windows, il faudrait passer par TrafficMonitor
   (plugin DLL en C++ compilé contre son API) ou Rainmeter (skin en surimpression) : nettement plus
-  lourd, non retenu ici.
+  lourd ; le bandeau HUD couvre le besoin (grosses lettres, toujours au premier plan) sans rien
+  installer de plus.
 
 ## Vérification / dépannage
 
