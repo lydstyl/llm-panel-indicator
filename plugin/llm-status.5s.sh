@@ -18,6 +18,12 @@ Résilience réseau : les noms `.lan` dépendent du DNS de la box, que systemd-r
 ignorer en basculant sur 1.1.1.1. Chaque appel au dashboard réessaie donc sur l'IP avec un
 en-tête Host explicite, et les nœuds sont interrogés directement en IP.
 
+Source d'occupation : d'abord `GET /api/llm-occupancy` du dashboard — UN contrat pour toutes les
+machines, qui agrège côté serveur `/slots` ET `/status` en parallèle (le `busy` du .224 est
+l'union des deux, et la file `queued` n'existe que dans `/status`). Repli, endpoint
+injoignable : on interroge `/slots` directement en IP, comme avant (comportement conservé
+pour Marie/Louis/SkillORP).
+
 Sortie (format cbar) : 1re ligne = panneau (image SVG), puis « --- », puis entrées du popup.
 Toujours exit 0 : un code de sortie non nul afficherait « llm-status ! » dans le panneau.
 """
@@ -64,6 +70,10 @@ DEFAULT_NODES = [
 ]
 
 _working = {}  # mémorise la cible qui répond (évite les timeouts à répétition)
+
+# id du nœud (config plugin) -> id du nœud dans /api/llm-occupancy (SkillORP absent du contrat :
+# il retombe sur le sondage direct, comportement historique).
+OCC_IDS = {"224": "gabriel", "marie": "marie", "louis": "louis"}
 
 
 def _fetch(url, host=None, timeout=TIMEOUT):
@@ -131,8 +141,8 @@ def decode_cmd(card):
     return ""
 
 
-def probe_node(node):
-    """Une machine : carte dashboard (modèle/port, enrichissement) + /slots (source de vérité)."""
+def probe_node(node, occ_node=None):
+    """Une machine : occupation (endpoint du dashboard) sinon carte + /slots en direct."""
     res = {
         "id": node["id"],
         "letter": (node.get("letter") or (node.get("label") or "?")[:1]).upper(),
@@ -143,8 +153,36 @@ def probe_node(node):
         "port": None,
         "active": 0,
         "slots": 0,
+        "queued": 0,
+        "busy": None,
+        "busy_status": False,
+        "ctx_pct": None,
+        "prompt_tokens": None,
+        "n_ctx": None,
+        "ctx_age_s": None,
+        "compactions_est": 0,
     }
 
+    # 1) Contrat unique : /api/llm-occupancy (agrégé côté serveur, /slots + /status en parallèle).
+    if occ_node:
+        res["state"] = occ_node.get("state") or "offline"
+        res["model"] = occ_node.get("model") or ""
+        res["port"] = occ_node.get("port")
+        res["slots"] = int(occ_node.get("slots") or 0)
+        res["active"] = int(occ_node.get("active") or 0)
+        res["busy"] = bool(occ_node.get("busy"))
+        res["busy_status"] = bool(occ_node.get("busy_status"))
+        res["queued"] = int(occ_node.get("queued") or 0)
+        res["ctx_pct"] = occ_node.get("ctx_pct")
+        res["prompt_tokens"] = occ_node.get("prompt_tokens")
+        res["n_ctx"] = occ_node.get("n_ctx")
+        res["ctx_age_s"] = occ_node.get("ctx_age_s")
+        res["compactions_est"] = int(occ_node.get("compactions_est") or 0)
+        if res["state"] == "online" and not res["slots"]:
+            res["slots"] = 1
+        return res
+
+    # 2) Repli : endpoint injoignable -> sondage direct, comportement historique.
     card = get_json("/api/pc-" + str(node["card"])) if node.get("card") else None
     card_ok = bool(card) and not card.get("error")
 
@@ -199,9 +237,16 @@ def node_level(node):
     """Niveau d'occupation : free | partial | busy | off."""
     if node["state"] != "online" or not node["slots"]:
         return "off"
-    if node["active"] <= 0:
+    # « busy » du contrat = union(/slots.is_processing, /status.busy) : une machine à 1 slot
+    # dont Strata annonce busy est saturée même si son slot n'est pas encore marqué.
+    busy = node.get("busy")
+    if busy is None:
+        busy = node["active"] > 0
+    if not busy:
         return "free"
     if node["active"] >= node["slots"]:
+        return "busy"
+    if node.get("busy_status"):
         return "busy"
     return "partial"
 
@@ -252,10 +297,29 @@ def short_model(name):
     return base if len(base) <= 34 else base[:31] + "…"
 
 
+def occupancy_map():
+    """Occupation agrégée du dashboard : UNE requête pour toutes les machines.
+
+    Renvoie {} si l endpoint est injoignable — chaque nœud retombe alors sur son sondage
+    direct (/slots), donc le plugin continue de fonctionner sans le dashboard.
+    """
+    occ = get_json("/api/llm-occupancy")
+    out = {}
+    if isinstance(occ, dict):
+        for node in (occ.get("nodes") or []):
+            if isinstance(node, dict) and node.get("id"):
+                out[str(node["id"])] = node
+    return out
+
+
 def main():
     nodes = [n for n in nodes_config() if n.get("ip")]
+    occ = occupancy_map()
     with ThreadPoolExecutor(max_workers=max(len(nodes), 1)) as pool:
-        probed = list(pool.map(probe_node, nodes))
+        probed = list(pool.map(
+            lambda node: probe_node(node, occ.get(OCC_IDS.get(str(node["id"]), str(node["id"])))),
+            nodes,
+        ))
 
     online = [n for n in probed if n["state"] == "online"]
     active = sum(n["active"] for n in online)
@@ -274,8 +338,21 @@ def main():
     for n in probed:
         level = node_level(n)
         if n["state"] == "online":
-            line = "%s %s — %d/%d · %s" % (
-                LEVEL_DOT[level], n["label"], n["active"], n["slots"], short_model(n["model"])
+            extra = ""
+            pct = n.get("ctx_pct")
+            if isinstance(pct, (int, float)):
+                # prompt_tokens = dernier prompt traité : passé 60 s sans nouvelle requête,
+                # la valeur n est plus forcément celle du contexte courant -> « ~ ».
+                age = n.get("ctx_age_s")
+                tilde = "~" if (n.get("busy") is False and isinstance(age, int) and age > 60) else ""
+                shown = "< 1" if 0 < pct < 1 else str(round(pct))
+                extra += " · ctx {}{} %".format(tilde, shown)
+            if n.get("queued"):
+                extra += " · ⏳ file {}".format(n["queued"])
+            if n.get("compactions_est"):
+                extra += " · ≈{} compact.".format(n["compactions_est"])
+            line = "%s %s — %d/%d · %s%s" % (
+                LEVEL_DOT[level], n["label"], n["active"], n["slots"], short_model(n["model"]), extra
             )
         elif n["state"] == "stopped":
             line = "⚫ %s — serveur arrêté" % n["label"]

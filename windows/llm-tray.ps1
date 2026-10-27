@@ -95,6 +95,46 @@ $Script:LevelText = @{
     'off'     = 'arrêté ou hors ligne'
 }
 
+# id interne -> id du nœud dans GET /api/llm-occupancy du dashboard (skillorp n'y est pas :
+# il retombe sur le sondage direct, comportement historique).
+$Script:OccIds = @{ '224' = 'gabriel'; 'marie' = 'marie'; 'louis' = 'louis' }
+
+# ---------------------------------------------------------------- journal
+# Un probe qui lève une exception (parse, DNS, timeout) tuait la boucle SANS AUCUNE TRACE :
+# l'icône restait figée et rien ne le signalait. Une ligne par cycle dans
+# %LOCALAPPDATA%\llm-tray\tray.log, rotation simple au-delà de 200 Ko.
+$Script:LogDir = Join-Path $env:LOCALAPPDATA 'llm-tray'
+$Script:LogFile = Join-Path $Script:LogDir 'tray.log'
+$Script:LogMaxBytes = 200KB
+
+function Write-TrayLog {
+    param([string]$Message)
+    try {
+        if (-not (Test-Path $Script:LogDir)) { New-Item -ItemType Directory -Path $Script:LogDir -Force | Out-Null }
+        if (Test-Path $Script:LogFile) {
+            if ((Get-Item $Script:LogFile).Length -gt $Script:LogMaxBytes) {
+                $keep = Get-Content -Path $Script:LogFile -Tail 400
+                Set-Content -Path $Script:LogFile -Value $keep -Encoding UTF8
+            }
+        }
+        $line = '{0} {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
+        Add-Content -Path $Script:LogFile -Value $line -Encoding UTF8
+    } catch { }   # le journal ne doit JAMAIS casser l'indicateur
+}
+
+# ---------------------------------------------------------------- instance unique
+# Relance manuelle + tache planifiee + dossier Demarrage peuvent se cumuler : deux instances
+# donnent deux icones et deux bandeaux. La seconde sort immediatement (sauf -SelfTest).
+if (-not $SelfTest) {
+    $other = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+        Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine -like '*llm-tray.ps1*' }
+    if ($other) {
+        $ids = @($other | ForEach-Object { $_.ProcessId })
+        Write-TrayLog ('deja lance pid ' + ($ids -join ','))
+        exit
+    }
+}
+
 # ---------------------------------------------------------------- accès HTTP
 function Get-JsonBody {
     param([string]$Url, [string]$HostHeader, [int]$TimeoutSec = 3)
@@ -154,7 +194,7 @@ function Get-Json {
 
 # ---------------------------------------------------------------- sondage d'une machine
 function Get-NodeState {
-    param([pscustomobject]$Node)
+    param([pscustomobject]$Node, $OccNode = $null)
 
     $state = [pscustomobject]@{
         Id     = $Node.Id
@@ -165,8 +205,32 @@ function Get-NodeState {
         Model  = ''
         Active = 0
         Slots  = 0
+        Queued = 0
+        CtxPct = $null
     }
 
+    # 1) Contrat unique : le dashboard a déjà agrégé /slots ET /status EN PARALLÈLE.
+    #    « busy » y est l'union des deux : une machine à 1 slot dont Strata annonce busy est
+    #    saturée même si son slot n'est pas encore marqué en traitement.
+    if ($OccNode) {
+        $state.Model = [string]$OccNode.model
+        $state.Active = [int]$OccNode.active
+        $state.Slots = [int]$OccNode.slots
+        $state.Queued = [int]$OccNode.queued
+        if ($null -ne $OccNode.ctx_pct) { $state.CtxPct = [double]$OccNode.ctx_pct }
+        if ([string]$OccNode.state -eq 'online') {
+            if ($state.Slots -lt 1) { $state.Slots = 1 }
+            if ($OccNode.busy) {
+                if ($state.Active -ge $state.Slots -or $OccNode.busy_status) { $state.Level = 'busy' }
+                else { $state.Level = 'partial' }
+            } else {
+                $state.Level = 'free'
+            }
+        }
+        return $state
+    }
+
+    # 2) Repli (endpoint injoignable) : sondage direct, comportement historique.
     $card = $null
     if ($Node.Card) { $card = Get-Json -Path ('/api/pc-' + $Node.Card) }
     $cardOk = $false
@@ -524,10 +588,17 @@ function Update-MenuTexts {
         $n = $Nodes[$i]
         $label = '{0} · {1} — {2}' -f $n.Letter, $n.Label, $Script:LevelText[$n.Level]
         if ($n.Level -ne 'off') {
+            $label += (' · {0}/{1}' -f $n.Active, $n.Slots)
+            if ($null -ne $n.CtxPct) {
+                # dernier prompt traité : « < 1 % » quand c'est infime, jamais « 0 % » trompeur
+                if ($n.CtxPct -gt 0 -and $n.CtxPct -lt 1) { $label += ' · ctx < 1 %' }
+                else { $label += (' · ctx {0} %' -f [int][math]::Round($n.CtxPct)) }
+            }
+            if ($n.Queued -gt 0) { $label += (' · ⏳ file {0}' -f $n.Queued) }
             $model = $n.Model
             if (-not $model) { $model = '?' }
             if ($model.Length -gt 34) { $model = $model.Substring(0, 31) + '…' }
-            $label += (' · {0}/{1} · {2}' -f $n.Active, $n.Slots, $model)
+            $label += (' · ' + $model)
         }
         $Script:MenuNodeItems[$i].Text = $label
     }
@@ -563,9 +634,28 @@ function Update-Interface {
     # ne rien rafraîchir pendant qu'un menu est ouvert (sinon le menu se referme sous le curseur)
     if ($Script:Refreshing -or $menu.Visible) { return }
     $Script:Refreshing = $true
+    $Script:CycleSummary = ''
+    $Script:CycleError = ''
     try {
+        # UNE requête pour les trois machines (le dashboard sonde /slots + /status en parallèle).
+        $occ = Get-Json -Path '/api/llm-occupancy'
+        $byId = @{}
+        if ($occ -and $occ.nodes) {
+            foreach ($o in @($occ.nodes)) {
+                if ($o -and $o.id) { $byId[[string]$o.id] = $o }
+            }
+        }
+
         $nodes = @()
-        foreach ($n in $Script:Nodes) { $nodes += Get-NodeState -Node $n }
+        foreach ($n in $Script:Nodes) {
+            $key = $Script:OccIds[$n.Id]
+            $occNode = $null
+            if ($key -and $byId.ContainsKey($key)) { $occNode = $byId[$key] }
+            $nodes += Get-NodeState -Node $n -OccNode $occNode
+        }
+        $bits = @()
+        foreach ($n in $nodes) { $bits += ('{0}={1}({2}/{3})' -f $n.Letter, $n.Level, $n.Active, $n.Slots) }
+        $Script:CycleSummary = ($bits -join ' ')
 
         $colors = @()
         $letters = @()
@@ -602,9 +692,12 @@ function Update-Interface {
         }
         Update-MenuTexts -Nodes $nodes -QRun $qRun -QWait $qWait -QueueOk ($null -ne $queue)
     } catch {
+        $Script:CycleError = ' ERREUR=' + $_.Exception.Message
         Set-Tooltip ('LLM locaux — erreur : ' + $_.Exception.Message)
     } finally {
         $Script:Refreshing = $false
+        # une ligne par cycle : heure, état par nœud, erreur éventuelle (jamais silencieux)
+        Write-TrayLog ('cycle ' + $Script:CycleSummary + $Script:CycleError)
     }
 }
 
@@ -654,6 +747,7 @@ $timer.Interval = [Math]::Max(2, $IntervalSec) * 1000
 $timer.Add_Tick({ Update-Interface })
 $timer.Start()
 
+Write-TrayLog ('demarrage intervalle={0}s cibles={1}' -f $IntervalSec, $DashboardFallback)
 Update-Interface
 
 if ($SelfTest) {
