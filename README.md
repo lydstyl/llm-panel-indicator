@@ -41,6 +41,28 @@ Sur une machine où l'applet ne serait pas déclaré automatiquement : clic droi
 
 Option `--no-panel` pour ne pas toucher à la configuration du panneau.
 
+## Mise à jour (un PC Pop!_OS / COSMIC)
+
+L'installeur est **idempotent** : le relancer met à jour le plugin et vérifie cbar + déclaration
+du panneau — il n'y a pas de mode « update » séparé, c'est la même commande.
+
+```bash
+curl -fsSL -H "Accept: application/vnd.github.raw" \
+  "https://api.github.com/repos/lydstyl/llm-panel-indicator/contents/install.sh?ref=main" | bash
+```
+
+> ⚠️ Juste après un commit sur ce repo, préférer **l'API GitHub** à `raw.githubusercontent.com` :
+> `raw` est derrière un CDN et peut servir l'ancienne version pendant plusieurs minutes, sans aucune
+> erreur. `Accept: application/vnd.github.raw` demande à l'API le fichier brut (pas l'enveloppe
+> JSON), `?ref=main` ancre la branche.
+
+Vérification après :
+
+```bash
+sha256sum ~/.config/cbar/plugins/llm-status.5s.sh   # doit coller avec le fichier distant
+~/.config/cbar/plugins/llm-status.5s.sh             # la 1re ligne est ce que voit le panneau
+```
+
 ## Comment ça marche
 
 ```
